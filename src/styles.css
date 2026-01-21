@@ -5,10 +5,10 @@
 :root {
   --a4w: 210mm;
   --a4h: 297mm;
-  --pad: 12mm;
+  --pad: 10mm;
   --chart-h-screen: 270px;
-  --chart-h-print: 92mm;
-  --chart-pad: 10px;
+  --chart-h-print: 88mm;
+  --chart-pad: 8px;
   --chart-title-h: 18px;
 
   --z1: rgba(219, 234, 254, 0.75);
@@ -29,7 +29,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 6mm;
+  gap: 4mm;
 }
 .avoid-break { break-inside: avoid; page-break-inside: avoid; }
 
@@ -121,5 +121,19 @@
   @page { size: A4; margin: 0; }
   .print-container { width: var(--a4w) !important; max-width: none !important; margin: 0 !important; box-shadow: none !important; }
   .page-split { break-after: page; page-break-after: always; }
-  .chart-box { height: var(--chart-h-print) !important; }
+  .a4-page { gap: 3mm !important; padding: 8mm !important; }
+  .chart-box {
+    height: var(--chart-h-print) !important;
+    padding: 6px !important;
+    border-radius: 8px !important;
+  }
+  .meta-card {
+    padding: 8px 10px !important;
+    border-radius: 8px !important;
+    margin-bottom: 2mm !important;
+  }
+  .chart-title { margin-bottom: 4px !important; }
+  .legend-row { margin-top: 4px !important; font-size: 10px !important; }
+  .report-title { font-size: 15px !important; margin-bottom: 2mm !important; }
+  .report-sub { font-size: 11px !important; margin-bottom: 2mm !important; }
 }
