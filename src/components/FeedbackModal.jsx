@@ -83,10 +83,12 @@ export default function FeedbackModal({ isOpen, onClose }) {
 
     try {
       // FormData depuis un vrai <form> => Formspree récupère correctement email/message
-      const fd = new FormData(formRef.current);
+      const fd = new FormData();
       fd.set("email", String(email).trim());
       fd.set("message", String(message).trim().slice(0, 2000));
       fd.set("g-recaptcha-response", token);
+
+      fd.append("company_website", String(bot || ""));
 
       await sendFormspree(fd, { endpoint });
 
