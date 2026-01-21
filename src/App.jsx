@@ -1,0 +1,895 @@
+import { useCallback, useState } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+} from "recharts";
+import html2canvas from "html2canvas";
+import {
+  AlignmentType,
+  BorderStyle,
+  Document,
+  ImageRun,
+  PageBreak,
+  Packer,
+  Paragraph,
+  ShadingType,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+  WidthType,
+} from "docx";
+
+import FeedbackModal from "./components/FeedbackModal.jsx";
+import ErrorDisplay from "./components/ErrorDisplay.jsx";
+import ZoneLegend from "./components/ZoneLegend.jsx";
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
+const CONFIG = {
+  MAX_DATA_POINTS: 10000,
+  MAX_FILE_SIZE_MB: 50,
+  CHART_CAPTURE_TIMEOUT: 15000,
+  CHART_CAPTURE_RETRIES: 2,
+  MIN_MEASUREMENTS: 10,
+  VALIDATION: {
+    FC_MIN: 30,
+    FC_MAX: 250,
+    VITESSE_MIN: 0,
+    VITESSE_MAX: 30,
+    VO2_MIN: 0,
+    VO2_MAX: 10,
+  },
+};
+
+// ==========================================
+// UTILITAIRES DE VALIDATION
+// ==========================================
+class ValidationError extends Error {
+  constructor(message, details = []) {
+    super(message);
+    this.name = "ValidationError";
+    this.details = details;
+  }
+}
+
+const validateNumber = (value, min, max, fieldName) => {
+  const num = parseFloat(String(value).replace(",", "."));
+  if (!Number.isFinite(num)) {
+    throw new ValidationError(`${fieldName} invalide: "${value}"`);
+  }
+  if (num < min || num > max) {
+    throw new ValidationError(`${fieldName} hors limites (${min}-${max}): ${num}`);
+  }
+  return num;
+};
+
+const safeNum = (value, defaultValue = 0) => {
+  const num = parseFloat(String(value).replace(",", "."));
+  return Number.isFinite(num) ? num : defaultValue;
+};
+
+const validateRequiredString = (value, fieldName) => {
+  if (!value || String(value).trim() === "") {
+    throw new ValidationError(`${fieldName} requis mais vide`);
+  }
+  return String(value).trim();
+};
+
+// ==========================================
+// VALIDATION DES DONNÉES
+// ==========================================
+const validateParsedData = (data) => {
+  const errors = [];
+
+  try { validateRequiredString(data.patient.nom, "Nom du patient"); } catch (e) { errors.push(e.message); }
+  try { validateRequiredString(data.patient.prenom, "Prénom du patient"); } catch (e) { errors.push(e.message); }
+
+  try { validateNumber(data.vt1.fc, CONFIG.VALIDATION.FC_MIN, CONFIG.VALIDATION.FC_MAX, "V1 FC"); } catch (e) { errors.push(e.message); }
+  try { validateNumber(data.vt1.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V1 Vitesse"); } catch (e) { errors.push(e.message); }
+
+  try {
+    const fc2 = validateNumber(data.vt2.fc, CONFIG.VALIDATION.FC_MIN, CONFIG.VALIDATION.FC_MAX, "V2 FC");
+    const fc1 = safeNum(data.vt1.fc);
+    if (fc2 <= fc1) errors.push(`V2 FC (${fc2}) doit être > V1 FC (${fc1})`);
+  } catch (e) { errors.push(e.message); }
+
+  try {
+    const v2 = validateNumber(data.vt2.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V2 Vitesse");
+    const v1 = safeNum(data.vt1.vitesse);
+    if (v2 <= v1) errors.push(`V2 Vitesse (${v2}) doit être > V1 Vitesse (${v1})`);
+  } catch (e) { errors.push(e.message); }
+
+  try { validateNumber(data.peakVO2.vo2, CONFIG.VALIDATION.VO2_MIN, CONFIG.VALIDATION.VO2_MAX, "VO2 Peak"); } catch (e) { errors.push(e.message); }
+  try { validateNumber(data.peakVO2.vo2kg, 0, 100, "VO2 Peak/kg"); } catch (e) { errors.push(e.message); }
+
+  if (!Array.isArray(data.measurements) || data.measurements.length < CONFIG.MIN_MEASUREMENTS) {
+    errors.push(`Insuffisant de mesures: ${data.measurements?.length || 0} (minimum: ${CONFIG.MIN_MEASUREMENTS})`);
+  }
+
+  if (Array.isArray(data.measurements) && data.measurements.length > CONFIG.MAX_DATA_POINTS) {
+    errors.push(`Trop de mesures: ${data.measurements.length} (maximum: ${CONFIG.MAX_DATA_POINTS})`);
+  }
+
+  if (errors.length > 0) throw new ValidationError("Validation échouée", errors);
+  return true;
+};
+
+// ==========================================
+// PARSING XML SÉCURISÉ
+// ==========================================
+const parseXMLSafe = (xmlString) => {
+  if (!xmlString || typeof xmlString !== "string") {
+    throw new ValidationError("Contenu XML invalide ou vide");
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlString, "text/xml");
+
+  const parserError = doc.querySelector("parsererror");
+  if (parserError) {
+    throw new ValidationError("XML mal formé: " + parserError.textContent);
+  }
+
+  const data = { patient: {}, test: {}, vt1: {}, vt2: {}, peakVO2: {}, measurements: [] };
+
+  let section = "", headers = [], inMeas = false;
+
+  try {
+    Array.from(doc.getElementsByTagName("Row")).forEach((row) => {
+      const cells = row.getElementsByTagName("Cell");
+      if (!cells.length) return;
+
+      const vals = [];
+      let col = 0;
+
+      Array.from(cells).forEach((cell) => {
+        const d = cell.getElementsByTagName("Data")[0];
+        const idx = cell.getAttribute("ss:Index");
+        if (idx) col = parseInt(idx) - 1;
+        vals[col] = d ? d.textContent : "";
+        const merge = cell.getAttribute("ss:MergeAcross");
+        if (merge) col += parseInt(merge);
+        col++;
+      });
+
+      const first = vals[0] || "";
+      if (first === "Données du patient") { section = "patient"; return; }
+      if (first === "Données test") { section = "test"; return; }
+      if (first === "Tableau Résumé") { section = "summary"; return; }
+      if (first === "Measurement Data") { section = "meas"; inMeas = true; return; }
+
+      const v = vals[2] || vals[1] || "";
+
+      if (section === "patient") {
+        if (first === "Nom") data.patient.nom = v;
+        if (first === "Prénom") data.patient.prenom = v;
+        if (first === "Date de Naissance") data.patient.dateNaissance = v;
+        if (first === "Sexe") data.patient.sexe = v;
+        if (first === "Poids") data.patient.poids = v;
+      }
+
+      if (section === "test") {
+        if (first === "Heure de début") data.test.dateHeure = v;
+      }
+
+      if (section === "summary" && first !== "Variable") {
+        if (first === "V'O2") {
+          data.vt1.vo2 = vals[5];
+          data.vt2.vo2 = vals[8];
+          data.peakVO2.vo2 = vals[11];
+        }
+        if (first === "V'O2/kg") {
+          data.vt1.vo2kg = vals[5];
+          data.vt2.vo2kg = vals[8];
+          data.peakVO2.vo2kg = vals[11];
+        }
+        if (first === "FC") {
+          data.vt1.fc = vals[5];
+          data.vt2.fc = vals[8];
+          data.peakVO2.fc = vals[11];
+        }
+        if (first === "v") {
+          data.vt1.vitesse = vals[5];
+          data.vt2.vitesse = vals[8];
+          data.peakVO2.vitesse = vals[11];
+        }
+        if (first === "V'E") {
+          data.vt1.ve = vals[5];
+          data.vt2.ve = vals[8];
+          data.peakVO2.ve = vals[11];
+        }
+      }
+
+      if (inMeas && section === "meas") {
+        if (first === "t") { headers = [...vals]; return; }
+        if (first === "h:mm:ss,ms") return;
+        if (first?.includes(":")) {
+          const m = {};
+          headers.forEach((h, i) => (m[h] = vals[i] || ""));
+
+          const tp = first.split(":");
+          const sp = tp[2]?.split(",") || ["0", "0"];
+          m.timeSeconds =
+            (parseInt(tp[0]) || 0) * 3600 +
+            (parseInt(tp[1]) || 0) * 60 +
+            (parseInt(sp[0]) || 0) +
+            (parseInt(sp[1]) || 0) / 1000;
+
+          m.vo2 = safeNum(m["V'O2"]);
+          m.fc = safeNum(m["FC"]);
+          m.ve = safeNum(m["V'E"]);
+          m.phase = m["Phase"] || "";
+
+          data.measurements.push(m);
+        }
+      }
+    });
+  } catch (e) {
+    throw new ValidationError("Erreur lors du parsing XML: " + e.message);
+  }
+
+  return data;
+};
+
+// ==========================================
+// CALCULS
+// ==========================================
+const ZCOL = {
+  Z1: getComputedStyle(document.documentElement).getPropertyValue("--z1").trim(),
+  Z2: getComputedStyle(document.documentElement).getPropertyValue("--z2").trim(),
+  Z3: getComputedStyle(document.documentElement).getPropertyValue("--z3").trim(),
+  Z4: getComputedStyle(document.documentElement).getPropertyValue("--z4").trim(),
+  Z5: getComputedStyle(document.documentElement).getPropertyValue("--z5").trim(),
+};
+
+const ZHEX = {
+  Z1: "DBEAFE",
+  Z2: "DCFCE7",
+  Z3: "FEF9C3",
+  Z4: "FFEDD5",
+  Z5: "FFE4E6",
+  HEADER: "1F4E8C",
+  BORDER: "94A3B8",
+};
+
+const zoneOfFc = (fc, fc1, fc2) => {
+  const mid = Math.round((fc1 + fc2) / 2);
+  const z4max = Math.round(fc2 * 1.05);
+  if (fc < fc1) return "Z1";
+  if (fc < mid) return "Z2";
+  if (fc < fc2) return "Z3";
+  if (fc <= z4max) return "Z4";
+  return "Z5";
+};
+
+const buildZoneSegments = (cd, fc1, fc2) => {
+  if (!cd?.length) return [];
+  const pts = cd
+    .filter((p) => Number.isFinite(p.timeSeconds) && Number.isFinite(p.fc))
+    .sort((a, b) => a.timeSeconds - b.timeSeconds);
+
+  if (!pts.length) return [];
+
+  const segs = [];
+  let curZ = zoneOfFc(pts[0].fc, fc1, fc2);
+  let startX = pts[0].timeSeconds;
+
+  for (let i = 1; i < pts.length; i++) {
+    const z = zoneOfFc(pts[i].fc, fc1, fc2);
+    if (z !== curZ) {
+      const endX = pts[i].timeSeconds;
+      if (endX > startX) segs.push({ z: curZ, x1: startX, x2: endX });
+      curZ = z;
+      startX = pts[i].timeSeconds;
+    }
+  }
+  const lastX = pts[pts.length - 1].timeSeconds;
+  if (lastX > startX) segs.push({ z: curZ, x1: startX, x2: lastX });
+
+  return segs;
+};
+
+const zoneLabel = (z) =>
+  ({
+    Z1: "Sous V1",
+    Z2: "V1 → milieu",
+    Z3: "Milieu → V2",
+    Z4: "V2 → +5%",
+    Z5: "> V2 +5%",
+  })[z] || z;
+
+const calcAge = (birth, test) => {
+  if (!birth) return 0;
+  const p = birth.split("/");
+  if (p.length !== 3) return 0;
+  const b = new Date(+p[2], +p[1] - 1, +p[0]);
+  let t = new Date();
+  if (test) {
+    const tp = test.split(" ")[0].split("/");
+    if (tp.length === 3) t = new Date(+tp[2], +tp[1] - 1, +tp[0]);
+  }
+  let age = t.getFullYear() - b.getFullYear();
+  if (t.getMonth() < b.getMonth() || (t.getMonth() === b.getMonth() && t.getDate() < b.getDate())) age--;
+  return Math.round(age * 10) / 10;
+};
+
+const getExData = (m) => {
+  const ex = m.filter((x) => x.phase && !x.phase.includes("Repos") && !x.phase.includes("Rétablissement"));
+  if (!ex.length) return m.filter((x) => x.phase && !x.phase.includes("Repos")).slice(0, 500);
+  const t0 = ex[0]?.timeSeconds || 0;
+  return ex.map((x) => ({ ...x, timeSeconds: x.timeSeconds - t0 }));
+};
+
+const smooth = (d, w = 30) => {
+  if (!d || d.length < w) return d.map((p) => ({ ...p, vo2S: p.vo2, veS: p.ve }));
+  const r = Math.max(1, Math.floor(d.length / 2000));
+  const s = d.filter((_, i) => i % r === 0);
+
+  return s.map((p, i) => {
+    const st = Math.max(0, i - Math.floor(w / r / 2));
+    const en = Math.min(s.length, i + Math.floor(w / r / 2));
+    const win = s.slice(st, en);
+    return {
+      ...p,
+      vo2S: Math.round((win.reduce((a, x) => a + x.vo2, 0) / win.length) * 100) / 100,
+      veS: Math.round((win.reduce((a, x) => a + x.ve, 0) / win.length) * 100) / 100,
+    };
+  });
+};
+
+const calcZones = (fc1, fc2, s1, s2) => {
+  const mid = Math.round((fc1 + fc2) / 2);
+  const mids = Math.round(((s1 + s2) / 2) * 10) / 10;
+  const z4fc = Math.round(fc2 * 1.05);
+  const z4s = Math.round(s2 * 1.05 * 10) / 10;
+
+  return [
+    { z: "Z1", fc: `< ${fc1}`, sp: `< ${s1.toFixed(1)}`, det: "Sous V1 (seuil ventilatoire 1)", col: ZCOL.Z1 },
+    { z: "Z2", fc: `${fc1} – ${mid}`, sp: `${s1.toFixed(1)} – ${mids.toFixed(1)}`, det: "Entre V1 et le milieu (S1+S2)/2", col: ZCOL.Z2 },
+    { z: "Z3", fc: `${mid} – ${fc2}`, sp: `${mids.toFixed(1)} – ${s2.toFixed(1)}`, det: "Entre le milieu et V2 (seuil ventilatoire 2)", col: ZCOL.Z3 },
+    { z: "Z4", fc: `${fc2} – ${z4fc}`, sp: `${s2.toFixed(1)} – ${z4s.toFixed(1)}`, det: "Au-dessus de V2 (jusqu'à +5 %)", col: ZCOL.Z4 },
+    { z: "Z5", fc: `> ${z4fc}`, sp: `> ${z4s.toFixed(1)}`, det: "Très au-dessus de V2 (> +5 %)", col: ZCOL.Z5 },
+  ];
+};
+
+const genRec = (fc1, fc2, s1, vo2) => {
+  const w = fc2 - fc1;
+  const lvl = vo2 < 35 ? "D" : vo2 >= 45 ? "A" : "I";
+  const z2w = Math.round((fc1 + fc2) / 2) - fc1;
+
+  const ana =
+    w < 8 ? `Zones étroites (${w} bpm). Priorité: élargir via Z2.` :
+    w < 12 ? `Zones relativement étroites. Objectif: les élargir.` :
+    w < 18 ? `Zones modérées (${w} bpm). Bonne flexibilité.` :
+    `Zones bien espacées (${w} bpm). Excellente adaptation.`;
+
+  let pri, comp, hi;
+  if (lvl === "D") {
+    pri = `Z2: 3-4×/sem (30-60 min) sous ${fc1} bpm. Construire la base aérobie.`;
+    comp = `Z1: récup active (marche, footing lent). Régularité > intensité.`;
+    hi = `Z3-5: éviter 8-12 semaines. Focus volume Z2.`;
+  } else if (lvl === "A") {
+    pri = `Z2: 2-3×/sem (60-120 min) à ${s1.toFixed(1)} km/h. Endurance lipidique.`;
+    comp = `Z3: 1-2×/sem tempo (20-40 min) ou 4×10 min progressif.`;
+    hi = `Z4-5: 1×/sem intervalles/côtes. 48h récup après.`;
+  } else {
+    pri = `Z2: 2-3×/sem (45-90 min) allure confortable. Base aérobie.`;
+    comp = `Z3: 1×/sem blocs 5-10 min (3-4×8 min) + récup courte.`;
+    hi = `Z4-5: occasionnel, non prioritaire pour endurance.`;
+  }
+
+  const spec =
+    z2w < 5 ? `⚠️ Z2 étroite (${z2w} bpm). Max ${fc1 + z2w} bpm en sortie longue.` : "";
+
+  return { ana, pri, comp, hi, spec, fu: "Retest conseillé dans 8-12 semaines.", lvl };
+};
+
+// ==========================================
+// CAPTURE CHART ROBUSTE
+// ==========================================
+const waitPaint = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+const b64ToU8 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+const captureChartWithRetry = async (id, retries = CONFIG.CHART_CAPTURE_RETRIES) => {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await captureChartAttempt(id);
+      if (result) return result;
+    } catch (e) {
+      console.warn(`Tentative ${attempt + 1}/${retries + 1} échouée:`, e.message);
+      if (attempt === retries) throw e;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  return null;
+};
+
+const captureChartAttempt = async (id) => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`Élément #${id} introuvable`);
+
+  if (document.fonts?.ready) await document.fonts.ready;
+  await waitPaint();
+
+  const rect = el.getBoundingClientRect();
+  const width = Math.round(rect.width);
+  const height = Math.round(rect.height);
+
+  if (width === 0 || height === 0) throw new Error(`Dimensions invalides pour #${id}: ${width}x${height}`);
+
+  return await Promise.race([
+    html2canvas(el, {
+      backgroundColor: "#fff",
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      width,
+      height,
+      onclone: (doc) => {
+        const clone = doc.getElementById(id);
+        if (clone) {
+          clone.style.width = width + "px";
+          clone.style.height = height + "px";
+          clone.style.overflow = "visible";
+        }
+      },
+    }).then((canvas) => ({ b64: canvas.toDataURL("image/png").split(",")[1], w: canvas.width, h: canvas.height })),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout capture")), CONFIG.CHART_CAPTURE_TIMEOUT)),
+  ]);
+};
+
+// ==========================================
+// GÉNÉRATION DOCX
+// ==========================================
+const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg) => {
+  const border = { style: BorderStyle.SINGLE, size: 1, color: "94A3B8" };
+  const bs = { top: border, bottom: border, left: border, right: border };
+
+  const vo2Cap = await captureChartWithRetry("vo2c");
+  const veCap = await captureChartWithRetry("vec");
+
+  const ch = [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 120 },
+      children: [new TextRun({ text: "Compte rendu d'épreuve d'effort – Endurance", bold: true, size: 32 })],
+    }),
+    new Paragraph({
+      spacing: { after: 80 },
+      children: [
+        new TextRun({ text: `Patient${data.patient.sexe === "femme" ? "e" : ""}: `, bold: true, size: 22 }),
+        new TextRun({ text: name, size: 22 }),
+      ],
+    }),
+    new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: `Âge: ${age} ans | Poids: ${poids}`, size: 22 })] }),
+    new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: `VO₂peak: ${vo2.toFixed(2)} L/min (${vo2kg} ml·kg⁻¹·min⁻¹)`, size: 22 })] }),
+    new Paragraph({
+      spacing: { after: 120 },
+      children: [new TextRun({ text: `Seuils: V1=${fc1} bpm/${s1} km/h ; V2=${fc2} bpm/${s2} km/h`, size: 22 })],
+    }),
+    new Paragraph({ spacing: { before: 80, after: 60 }, children: [new TextRun({ text: "Zones d'entraînement personnalisées", bold: true, size: 26 })] }),
+  ];
+
+  ch.push(
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Zone", bold: true, color: "FFFFFF", size: 20 })] })] }),
+            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "FC (bpm)", bold: true, color: "FFFFFF", size: 20 })] })] }),
+            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Vitesse (km/h)", bold: true, color: "FFFFFF", size: 20 })] })] }),
+            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Détermination (seuils)", bold: true, color: "FFFFFF", size: 20 })] })] }),
+          ],
+        }),
+        ...zonesTable.map((z) =>
+          new TableRow({
+            children: [
+              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.z, bold: true, size: 20 })] })] }),
+              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.fc, size: 20 })] })] }),
+              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.sp, size: 20 })] })] }),
+              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.det, size: 20 })] })] }),
+            ],
+          }),
+        ),
+      ],
+    }),
+  );
+
+  ch.push(new Paragraph({ spacing: { before: 120, after: 60 }, children: [new TextRun({ text: "VO₂ et VE avec seuils et zones", bold: true, size: 26 })] }));
+
+  const pushChart = (cap, title) => {
+    if (!cap) {
+      ch.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: `${title} - capture indisponible`, italic: true, color: "999999", size: 20 })] }));
+      return;
+    }
+    const targetW = 520;
+    const targetH = Math.round(targetW * (cap.h / cap.w));
+    ch.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: title, bold: true, size: 22 })] }));
+    ch.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new ImageRun({ type: "png", data: b64ToU8(cap.b64), transformation: { width: targetW, height: targetH } })],
+      }),
+    );
+  };
+
+  pushChart(vo2Cap, "Graphique VO₂");
+  pushChart(veCap, "Graphique VE");
+
+  ch.push(new Paragraph({ children: [new PageBreak()] }));
+  ch.push(new Paragraph({ spacing: { before: 60, after: 80 }, children: [new TextRun({ text: "Recommandations", bold: true, size: 26 })] }));
+  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.ana, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.pri, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.comp, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.hi, size: 22 })] }));
+  if (rec.spec) ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.spec, italics: true, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: rec.fu, italics: true, size: 22 })] }));
+
+  return new Document({
+    styles: { default: { document: { run: { font: "Arial", size: 22 } } } },
+    sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 720, right: 720, bottom: 720, left: 720 } } }, children: ch }],
+  });
+};
+
+const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, setExp, setErr) => {
+  setExp(true);
+  setErr(null);
+  try {
+    await waitPaint();
+    const doc = await genDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg);
+    const blob = await Packer.toBlob(doc);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `Rapport_TCP_${name.replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.docx`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  } catch (e) {
+    console.error("Erreur génération DOCX:", e);
+    setErr(`Échec export DOCX: ${e.message || "Erreur inconnue"}`);
+  } finally {
+    setExp(false);
+  }
+};
+
+export default function App() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [drag, setDrag] = useState(false);
+  const [load, setLoad] = useState(false);
+  const [exp, setExp] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
+
+  const onFile = useCallback((f) => {
+    if (!f) { setErr(new ValidationError("Aucun fichier sélectionné")); return; }
+    if (!f.name.endsWith(".xml")) { setErr(new ValidationError("Format invalide. Fichier XML requis.")); return; }
+    if (f.size > CONFIG.MAX_FILE_SIZE_MB * 1024 * 1024) { setErr(new ValidationError(`Fichier trop volumineux (max ${CONFIG.MAX_FILE_SIZE_MB}MB)`)); return; }
+
+    setLoad(true);
+    setErr(null);
+
+    const r = new FileReader();
+    r.onerror = () => { setErr(new ValidationError("Échec de lecture du fichier")); setLoad(false); };
+
+    r.onload = (e) => {
+      try {
+        const parsed = parseXMLSafe(e.target.result);
+        validateParsedData(parsed);
+        setData(parsed);
+        setErr(null);
+      } catch (x) {
+        console.error("Erreur parsing/validation:", x);
+        setErr(x);
+      } finally {
+        setLoad(false);
+      }
+    };
+
+    r.readAsText(f);
+  }, []);
+
+  if (!data) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="max-w-xl w-full text-center">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">Générateur de Rapport TCP</h1>
+          <p className="text-gray-600 mb-4">Endurance longue distance - Version Production</p>
+          <div className="inline-flex items-center gap-2 bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm mb-6">
+            🔒 Données 100% locales • Validation stricte
+          </div>
+
+          <div
+            onDrop={(e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files[0]); }}
+            onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setDrag(false); }}
+            className={`border-2 border-dashed rounded-2xl p-12 bg-white shadow-lg cursor-pointer transition-all ${
+              drag ? "border-blue-500 bg-blue-50 scale-105" : "border-gray-300 hover:border-blue-400"
+            }`}
+            role="button"
+            aria-label="Zone de dépôt de fichier"
+          >
+            <input
+              type="file"
+              accept=".xml"
+              onChange={(e) => onFile(e.target.files[0])}
+              className="hidden"
+              id="fi"
+              aria-label="Sélectionner un fichier XML"
+            />
+            <label htmlFor="fi" className="cursor-pointer">
+              <div className="text-6xl mb-4" aria-hidden="true">{load ? "⏳" : "📄"}</div>
+              <p className="text-lg font-medium text-gray-700">{load ? "Validation en cours..." : "Glissez votre fichier XML"}</p>
+              <p className="text-gray-500 text-sm">ou cliquez pour sélectionner</p>
+              <p className="text-gray-400 text-xs mt-2">Max {CONFIG.MAX_FILE_SIZE_MB}MB</p>
+            </label>
+          </div>
+
+          {err && <ErrorDisplay error={err} onDismiss={() => setErr(null)} />}
+        </div>
+      </div>
+    );
+  }
+
+  const name = `${data.patient.nom || ""} ${data.patient.prenom || ""}`.trim() || "Patient";
+  const age = calcAge(data.patient.dateNaissance, data.test.dateHeure);
+  const poids = data.patient.poids || "-";
+
+  const fc1 = safeNum(data.vt1.fc);
+  const fc2 = safeNum(data.vt2.fc);
+  const s1 = safeNum(data.vt1.vitesse);
+  const s2 = safeNum(data.vt2.vitesse);
+  const vo2 = safeNum(data.peakVO2.vo2);
+  const vo2kg = safeNum(data.peakVO2.vo2kg);
+
+  const rec = genRec(fc1, fc2, s1, vo2kg);
+
+  const cdRaw = smooth(getExData(data.measurements), 30);
+  const cd = cdRaw.filter((p) => Number.isFinite(p.timeSeconds));
+
+  const zoneSegs = buildZoneSegments(cd, fc1, fc2);
+  const zonesTable = calcZones(fc1, fc2, s1, s2);
+
+  const CHART_MARGIN = { top: 8, right: 18, left: 28, bottom: 26 };
+
+  const printNow = async () => {
+    if (document.fonts?.ready) await document.fonts.ready;
+    await waitPaint();
+    window.print();
+  };
+
+  const ZoneAreas = () => (
+    <>
+      {zoneSegs.map((s, i) => (
+        <ReferenceArea
+          key={i}
+          x1={s.x1}
+          x2={s.x2}
+          ifFront={false}
+          fill={ZCOL[s.z]}
+          fillOpacity={1}
+          strokeOpacity={0}
+        />
+      ))}
+    </>
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-100">
+      <div className="no-print bg-white shadow border-b p-4 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto flex justify-between items-center flex-wrap gap-3">
+          <button
+            onClick={() => { setData(null); setErr(null); }}
+            className="text-gray-600 hover:text-gray-800 transition-colors"
+            aria-label="Charger un nouveau fichier"
+            type="button"
+          >
+            ← Nouveau
+          </button>
+
+          <button
+            onClick={() => setShowFeedback(true)}
+            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium transition-colors"
+            aria-label="Donner votre avis"
+            type="button"
+          >
+            💬 Feedback
+          </button>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => dlDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, setExp, setErr)}
+              disabled={exp}
+              className={`px-4 py-2 rounded text-white font-medium transition-all ${exp ? "bg-gray-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"}`}
+              aria-label={exp ? "Export DOCX en cours" : "Exporter en DOCX"}
+              type="button"
+            >
+              {exp ? "⏳ Export..." : "📝 DOCX"}
+            </button>
+
+            <button
+              onClick={printNow}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium transition-colors"
+              aria-label="Imprimer ou exporter en PDF"
+              type="button"
+            >
+              🖨️ PDF
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {err && (
+        <div className="no-print max-w-4xl mx-auto mt-4 px-4">
+          <ErrorDisplay error={err} onDismiss={() => setErr(null)} />
+        </div>
+      )}
+
+      <FeedbackModal isOpen={showFeedback} onClose={() => setShowFeedback(false)} patientName={name} />
+
+      <div className="print-container mx-auto shadow-lg my-6 print:my-0 print:shadow-none" style={{ maxWidth: "210mm" }}>
+        {/* PAGE 1 */}
+        <div className="a4-page page-split">
+          <div className="avoid-break">
+            <div className="report-title">Compte rendu d'épreuve d'effort – Endurance longue distance</div>
+            <div className="report-sub">VO₂ et VE avec seuils et zones</div>
+
+            <div className="meta-card mt-3 text-[12px] text-slate-700">
+              <div className="flex flex-wrap gap-x-6 gap-y-1">
+                <div>
+                  <b>Patient{data.patient.sexe === "femme" ? "e" : ""} :</b> {name}
+                </div>
+                <div><b>Âge :</b> {age} ans</div>
+                <div><b>Poids :</b> {poids}</div>
+              </div>
+              <div className="mt-1">
+                <b>VO₂peak :</b> {vo2.toFixed(2)} L/min ({vo2kg} ml·kg⁻¹·min⁻¹)
+                <span className="mx-2">|</span>
+                <b>V1 :</b> {fc1} bpm / {s1} km/h
+                <span className="mx-2">|</span>
+                <b>V2 :</b> {fc2} bpm / {s2} km/h
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <h2 className="text-[13px] font-extrabold text-slate-800 mb-2">Zones d'entraînement personnalisées</h2>
+
+              <table className="zones-table w-full border-collapse" role="table" aria-label="Tableau des zones d'entraînement">
+                <thead>
+                  <tr>
+                    <th scope="col">Zone</th>
+                    <th scope="col">FC (bpm)</th>
+                    <th scope="col">Vitesse (km/h)</th>
+                    <th scope="col">Détermination (seuils)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {zonesTable.map((z) => (
+                    <tr key={z.z} style={{ background: z.col }}>
+                      <td><span className="badge">{z.z}</span></td>
+                      <td className="font-semibold">{z.fc}</td>
+                      <td className="font-semibold">{z.sp}</td>
+                      <td>{z.det}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="avoid-break">
+            <div id="vo2c" className="chart-box">
+              <div className="chart-title">VO₂ (moyenne 30 s) avec seuils et zones</div>
+              <div className="chart-inner">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={cd} margin={CHART_MARGIN}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                    <ZoneAreas />
+                    <ReferenceLine
+                      x={cd.find((p) => p.fc >= fc1)?.timeSeconds || 0}
+                      stroke="var(--zline1)"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      label="V1"
+                    />
+                    <ReferenceLine
+                      x={cd.find((p) => p.fc >= fc2)?.timeSeconds || 0}
+                      stroke="var(--zline2)"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      label="V2"
+                    />
+                    <XAxis
+                      dataKey="timeSeconds"
+                      tick={{ fontSize: 10 }}
+                      tickFormatter={(v) => Math.round(v)}
+                      label={{ value: "Temps (s)", position: "insideBottom", offset: -10, fontSize: 10 }}
+                    />
+                    <YAxis
+                      domain={["auto", "auto"]}
+                      tick={{ fontSize: 10 }}
+                      label={{ value: "VO₂ (L/min)", angle: -90, position: "insideLeft", fontSize: 10 }}
+                    />
+                    <Line type="monotone" dataKey="vo2S" stroke="#1976d2" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} />
+            </div>
+          </div>
+        </div>
+
+        {/* PAGE 2 */}
+        <div className="a4-page">
+          <div className="avoid-break">
+            <div id="vec" className="chart-box">
+              <div className="chart-title">VE (moyenne 30 s) avec seuils et zones</div>
+              <div className="chart-inner">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={cd} margin={CHART_MARGIN}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                    <ZoneAreas />
+                    <ReferenceLine
+                      x={cd.find((p) => p.fc >= fc1)?.timeSeconds || 0}
+                      stroke="var(--zline1)"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      label="V1"
+                    />
+                    <ReferenceLine
+                      x={cd.find((p) => p.fc >= fc2)?.timeSeconds || 0}
+                      stroke="var(--zline2)"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      label="V2"
+                    />
+                    <XAxis
+                      dataKey="timeSeconds"
+                      tick={{ fontSize: 10 }}
+                      tickFormatter={(v) => Math.round(v)}
+                      label={{ value: "Temps (s)", position: "insideBottom", offset: -10, fontSize: 10 }}
+                    />
+                    <YAxis
+                      domain={["auto", "auto"]}
+                      tick={{ fontSize: 10 }}
+                      label={{ value: "VE (L/min)", angle: -90, position: "insideLeft", fontSize: 10 }}
+                    />
+                    <Line type="monotone" dataKey="veS" stroke="#1976d2" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} />
+            </div>
+          </div>
+
+          <div className="avoid-break">
+            <h2 className="text-[13px] font-extrabold text-slate-800 mt-2 mb-2">Recommandations d'entraînement</h2>
+            <div className="text-[12px] text-slate-700 space-y-2">
+              <p>{rec.ana}</p>
+              <p>{rec.pri}</p>
+              <p>{rec.comp}</p>
+              <p>{rec.hi}</p>
+              {rec.spec && (
+                <p className="p-2 rounded border-l-4" style={{ background: ZCOL.Z3, borderColor: "#eab308" }}>
+                  {rec.spec}
+                </p>
+              )}
+              <p className="italic">{rec.fu}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="no-print text-center py-6 text-sm text-gray-500">
+        🔒 Données traitées localement. Aucun envoi externe (hors feedback). • v2.1
+      </div>
+    </div>
+  );
+}
