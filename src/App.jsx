@@ -738,7 +738,7 @@ export default function App() {
         {/* PAGE 1 */}
         <div className="a4-page page-split">
           <div className="avoid-break">
-            <div className="report-title">Compte rendu d'épreuve d'effort – Endurance longue distance</div>
+            <div className="report-title">Compte rendu de test d'effort</div>
             <div className="report-sub">VO₂ et VE avec seuils et zones</div>
 
             <div className="meta-card mt-3 text-[12px] text-slate-700">
