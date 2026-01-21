@@ -20,6 +20,50 @@ export default function FeedbackModal({ isOpen, onClose }) {
   const [message, setMessage] = useState("");
   const [bot, setBot] = useState("");
 
+  // refs pour accéder aux valeurs actuelles dans le callback
+  const emailRef = useRef(email);
+  const messageRef = useRef(message);
+  const botRef = useRef(bot);
+
+  // Synchroniser les refs avec les states
+  useEffect(() => { emailRef.current = email; }, [email]);
+  useEffect(() => { messageRef.current = message; }, [message]);
+  useEffect(() => { botRef.current = bot; }, [bot]);
+
+  const submitWithToken = useCallback(async (token) => {
+    if (!endpoint) {
+      setError("VITE_FORMSPREE_ENDPOINT manquant (.env)");
+      return;
+    }
+
+    setSending(true);
+    setError(null);
+
+    try {
+      const fd = new FormData();
+      fd.set("email", String(emailRef.current).trim());
+      fd.set("message", String(messageRef.current).trim().slice(0, 2000));
+      fd.set("g-recaptcha-response", token);
+      fd.append("company_website", String(botRef.current || ""));
+
+      console.log("FormData:", Object.fromEntries(fd.entries()));
+      await sendFormspree(fd, { endpoint });
+
+      setSuccess(true);
+      setTimeout(() => {
+        resetForm();
+        onClose();
+      }, 1200);
+    } catch (err) {
+      setError(err?.message || "Échec de l'envoi. Réessayez.");
+      if (window.grecaptcha && widgetIdRef.current != null) {
+        try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
+      }
+    } finally {
+      setSending(false);
+    }
+  }, [endpoint, onClose]);
+
   // render reCAPTCHA v2 invisible
   useEffect(() => {
     if (!isOpen) return;
@@ -29,14 +73,14 @@ export default function FeedbackModal({ isOpen, onClose }) {
     if (!siteKey) return;
 
     const tryRender = () => {
-      if (!window.grecaptcha || !captchaElRef.current) return false;
+      if (!window.grecaptcha?.render || !captchaElRef.current) return false;
       if (widgetIdRef.current != null) return true;
 
       widgetIdRef.current = window.grecaptcha.render(captchaElRef.current, {
         sitekey: siteKey,
         size: "invisible",
         callback: (token) => {
-          void submitWithToken(token);
+          submitWithToken(token);
         },
         "expired-callback": () => setError("reCAPTCHA expiré. Réessayez."),
         "error-callback": () => setError("reCAPTCHA indisponible. Réessayez."),
@@ -50,7 +94,7 @@ export default function FeedbackModal({ isOpen, onClose }) {
     }, 100);
 
     return () => clearInterval(t);
-  }, [isOpen, siteKey]);
+  }, [isOpen, siteKey, submitWithToken]);
 
   const validate = () => {
     const e = String(email || "").trim();
@@ -71,40 +115,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
 
     if (window.grecaptcha && widgetIdRef.current != null) {
       try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
-    }
-  };
-
-  const submitWithToken = async (token) => {
-    if (!endpoint) return setError("VITE_FORMSPREE_ENDPOINT manquant (.env)");
-    if (!formRef.current) return setError("Formulaire introuvable");
-
-    setSending(true);
-    setError(null);
-
-    try {
-      // FormData depuis un vrai <form> => Formspree récupère correctement email/message
-      const fd = new FormData();
-      fd.set("email", String(email).trim());
-      fd.set("message", String(message).trim().slice(0, 2000));
-      fd.set("g-recaptcha-response", token);
-
-      fd.append("company_website", String(bot || ""));
-
-      console.log("FormData:", Object.fromEntries(fd.entries()));
-      await sendFormspree(fd, { endpoint });
-
-      setSuccess(true);
-      setTimeout(() => {
-        resetForm();
-        onClose();
-      }, 1200);
-    } catch (err) {
-      setError(err?.message || "Échec de l'envoi. Réessayez.");
-      if (window.grecaptcha && widgetIdRef.current != null) {
-        try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
-      }
-    } finally {
-      setSending(false);
     }
   };
 
