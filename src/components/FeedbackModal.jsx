@@ -90,6 +90,7 @@ export default function FeedbackModal({ isOpen, onClose }) {
 
       fd.append("company_website", String(bot || ""));
 
+      console.log("FormData:", Object.fromEntries(fd.entries()));
       await sendFormspree(fd, { endpoint });
 
       setSuccess(true);
