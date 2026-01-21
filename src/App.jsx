@@ -279,12 +279,13 @@ const parseXMLSafe = (xmlString) => {
 // ==========================================
 // CALCULS
 // ==========================================
+// Couleurs pour le tableau (avec opacité)
 const ZCOL = {
-  Z1: getComputedStyle(document.documentElement).getPropertyValue("--z1").trim(),
-  Z2: getComputedStyle(document.documentElement).getPropertyValue("--z2").trim(),
-  Z3: getComputedStyle(document.documentElement).getPropertyValue("--z3").trim(),
-  Z4: getComputedStyle(document.documentElement).getPropertyValue("--z4").trim(),
-  Z5: getComputedStyle(document.documentElement).getPropertyValue("--z5").trim(),
+  Z1: "rgba(219, 234, 254, 0.75)",
+  Z2: "rgba(220, 252, 231, 0.75)",
+  Z3: "rgba(254, 249, 195, 0.75)",
+  Z4: "rgba(255, 237, 213, 0.75)",
+  Z5: "rgba(255, 228, 230, 0.75)",
 };
 
 // Couleurs opaques pour les graphiques Recharts
@@ -325,17 +326,19 @@ const zoneOfFc = (fc, fc1, fc2, sportType = "endurance") => {
 const buildZoneSegments = (cd, fc1, fc2, sportType) => {
   if (!cd?.length) return [];
   const pts = cd
-    .filter((p) => Number.isFinite(p.timeSeconds) && Number.isFinite(p.fc))
+    .filter((p) => Number.isFinite(p.timeSeconds) && Number.isFinite(p.fcS || p.fc))
     .sort((a, b) => a.timeSeconds - b.timeSeconds);
 
   if (!pts.length) return [];
 
   const segs = [];
-  let curZ = zoneOfFc(pts[0].fc, fc1, fc2, sportType);
+  const fc = pts[0].fcS || pts[0].fc;
+  let curZ = zoneOfFc(fc, fc1, fc2, sportType);
   let startX = pts[0].timeSeconds;
 
   for (let i = 1; i < pts.length; i++) {
-    const z = zoneOfFc(pts[i].fc, fc1, fc2, sportType);
+    const fcVal = pts[i].fcS || pts[i].fc;
+    const z = zoneOfFc(fcVal, fc1, fc2, sportType);
     if (z !== curZ) {
       const endX = pts[i].timeSeconds;
       if (endX > startX) segs.push({ z: curZ, x1: startX, x2: endX });
