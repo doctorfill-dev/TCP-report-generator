@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import PropTypes from "prop-types";
 import { sendFormspree } from "../lib/formspree";
 
-// Honeypot anti-bot (champ caché)
 const BOT_FIELD = "company_website";
 
 export default function FeedbackModal({ isOpen, onClose }) {
@@ -20,7 +19,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState(null);
 
-  // On garde en mémoire une "action" à exécuter après obtention du token
   const pendingSubmitRef = useRef(false);
 
   const resetForm = () => {
@@ -31,68 +29,50 @@ export default function FeedbackModal({ isOpen, onClose }) {
     setError(null);
     pendingSubmitRef.current = false;
 
-    // reset captcha si dispo
     if (window.grecaptcha && widgetIdRef.current != null) {
-      try {
-        window.grecaptcha.reset(widgetIdRef.current);
-      } catch {
-        // ignore
-      }
+      try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
     }
   };
 
-  // Render reCAPTCHA v2 Invisible quand le modal s’ouvre
   useEffect(() => {
     if (!isOpen) return;
 
-    // Nettoyage d'état quand on ouvre
     setError(null);
     setSuccess(false);
 
-    // Si pas de clés, on reste fonctionnel mais on affichera un message d’erreur à l’envoi
     if (!siteKey) return;
 
     const tryRender = () => {
-      if (!window.grecaptcha) return false;
-      if (!captchaElRef.current) return false;
+      if (!window.grecaptcha || !captchaElRef.current) return false;
       if (widgetIdRef.current != null) return true;
 
       widgetIdRef.current = window.grecaptcha.render(captchaElRef.current, {
         sitekey: siteKey,
         size: "invisible",
         callback: (token) => {
-          // token prêt -> on envoie si un submit était en attente
           if (pendingSubmitRef.current) {
             pendingSubmitRef.current = false;
             void submitWithToken(token);
           }
         },
-        "expired-callback": () => {
-          setError("reCAPTCHA expiré. Réessayez.");
-        },
-        "error-callback": () => {
-          setError("reCAPTCHA indisponible. Réessayez.");
-        },
+        "expired-callback": () => setError("reCAPTCHA expiré. Réessayez."),
+        "error-callback": () => setError("reCAPTCHA indisponible. Réessayez."),
       });
 
       return true;
     };
 
-    // attend le chargement du script google
     const t = setInterval(() => {
       if (tryRender()) clearInterval(t);
     }, 100);
 
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, siteKey]);
 
   const validate = () => {
     const e = String(email || "").trim();
     const m = String(message || "").trim();
-
     if (!e) return "Email requis";
-    // validation simple email
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return "Email invalide";
     if (!m) return "Message requis";
     if (m.length > 2000) return "Message trop long (max 2000 caractères)";
@@ -100,23 +80,18 @@ export default function FeedbackModal({ isOpen, onClose }) {
   };
 
   const submitWithToken = async (token) => {
-    if (!endpoint) {
-      setError("VITE_FORMSPREE_ENDPOINT manquant (.env)");
-      return;
-    }
+    if (!endpoint) return setError("VITE_FORMSPREE_ENDPOINT manquant (.env)");
 
     setSending(true);
     setError(null);
 
     try {
-      // ⚠️ On n’envoie QUE email + message (+ recaptcha)
-      const payload = {
-        email: String(email).trim(),
-        message: String(message).trim().slice(0, 2000),
-        "g-recaptcha-response": token,
-      };
+      const fd = new FormData();
+      fd.append("email", String(email).trim());
+      fd.append("message", String(message).trim().slice(0, 2000));
+      fd.append("g-recaptcha-response", token);
 
-      await sendFormspree(payload, { endpoint });
+      await sendFormspree(fd, { endpoint });
 
       setSuccess(true);
       setTimeout(() => {
@@ -126,13 +101,8 @@ export default function FeedbackModal({ isOpen, onClose }) {
     } catch (err) {
       console.error("Formspree error:", err);
       setError(err?.message || "Échec de l'envoi. Réessayez.");
-      // reset captcha pour autoriser un nouvel essai
       if (window.grecaptcha && widgetIdRef.current != null) {
-        try {
-          window.grecaptcha.reset(widgetIdRef.current);
-        } catch {
-          // ignore
-        }
+        try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
       }
     } finally {
       setSending(false);
@@ -142,7 +112,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
   const handleSubmit = () => {
     setError(null);
 
-    // Honeypot rempli => on "fait comme si" ok (anti-bot)
     if (bot && bot.trim() !== "") {
       setSuccess(true);
       setTimeout(() => {
@@ -153,26 +122,17 @@ export default function FeedbackModal({ isOpen, onClose }) {
     }
 
     const vErr = validate();
-    if (vErr) {
-      setError(vErr);
-      return;
-    }
+    if (vErr) return setError(vErr);
 
-    if (!siteKey) {
-      setError("VITE_RECAPTCHA_SITE_KEY manquant (.env)");
-      return;
-    }
-
+    if (!siteKey) return setError("VITE_RECAPTCHA_SITE_KEY manquant (.env)");
     if (!window.grecaptcha || widgetIdRef.current == null) {
-      setError("reCAPTCHA non chargé. Vérifie le script dans index.html.");
-      return;
+      return setError("reCAPTCHA non chargé. Vérifie le script dans index.html.");
     }
 
-    // Déclenche le challenge invisible -> callback(token) => submitWithToken(token)
     pendingSubmitRef.current = true;
     try {
       window.grecaptcha.execute(widgetIdRef.current);
-    } catch (e) {
+    } catch {
       pendingSubmitRef.current = false;
       setError("Impossible d'exécuter reCAPTCHA. Réessayez.");
     }
@@ -218,7 +178,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
               <div className="text-xs text-gray-500 mt-1">{message.length}/2000</div>
             </div>
 
-            {/* Honeypot caché */}
             <div className="hidden" aria-hidden="true">
               <label>Website</label>
               <input
@@ -230,7 +189,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
               />
             </div>
 
-            {/* Conteneur reCAPTCHA invisible (obligatoire pour v2 Invisible) */}
             <div ref={captchaElRef} />
 
             {error && (
