@@ -1,13 +1,8 @@
 import PropTypes from "prop-types";
 
-export default function ZoneLegend({ ZCOL, zoneLabel }) {
-  const items = [
-    { z: "Z1", c: ZCOL.Z1 },
-    { z: "Z2", c: ZCOL.Z2 },
-    { z: "Z3", c: ZCOL.Z3 },
-    { z: "Z4", c: ZCOL.Z4 },
-    { z: "Z5", c: ZCOL.Z5 },
-  ];
+export default function ZoneLegend({ ZCOL, zoneLabel, zones }) {
+  const zoneList = zones?.length ? zones : ["Z1", "Z2", "Z3", "Z4", "Z5"];
+  const items = zoneList.map((z) => ({ z, c: ZCOL[z] }));
 
   return (
     <div className="legend-row" role="list" aria-label="Légende des zones d'entraînement">
@@ -25,4 +20,5 @@ export default function ZoneLegend({ ZCOL, zoneLabel }) {
 ZoneLegend.propTypes = {
   ZCOL: PropTypes.object.isRequired,
   zoneLabel: PropTypes.func.isRequired,
+  zones: PropTypes.arrayOf(PropTypes.string),
 };

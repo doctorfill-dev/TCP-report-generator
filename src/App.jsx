@@ -44,6 +44,8 @@ const CONFIG = {
     FC_MAX: 250,
     VITESSE_MIN: 0,
     VITESSE_MAX: 30,
+    POWER_MIN: 0,
+    POWER_MAX: 500,
     VO2_MIN: 0,
     VO2_MAX: 10,
   },
@@ -93,7 +95,14 @@ const validateParsedData = (data) => {
   try { validateRequiredString(data.patient.prenom, "Prénom du patient"); } catch (e) { errors.push(e.message); }
 
   try { validateNumber(data.vt1.fc, CONFIG.VALIDATION.FC_MIN, CONFIG.VALIDATION.FC_MAX, "V1 FC"); } catch (e) { errors.push(e.message); }
-  try { validateNumber(data.vt1.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V1 Vitesse"); } catch (e) { errors.push(e.message); }
+
+  // Validate speed OR power depending on test type
+  const isBike = data.testType === "bike";
+  if (isBike) {
+    try { validateNumber(data.vt1.power, CONFIG.VALIDATION.POWER_MIN, CONFIG.VALIDATION.POWER_MAX, "V1 Puissance"); } catch (e) { errors.push(e.message); }
+  } else {
+    try { validateNumber(data.vt1.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V1 Vitesse"); } catch (e) { errors.push(e.message); }
+  }
 
   try {
     const fc2 = validateNumber(data.vt2.fc, CONFIG.VALIDATION.FC_MIN, CONFIG.VALIDATION.FC_MAX, "V2 FC");
@@ -101,11 +110,19 @@ const validateParsedData = (data) => {
     if (fc2 <= fc1) errors.push(`V2 FC (${fc2}) doit être > V1 FC (${fc1})`);
   } catch (e) { errors.push(e.message); }
 
-  try {
-    const v2 = validateNumber(data.vt2.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V2 Vitesse");
-    const v1 = safeNum(data.vt1.vitesse);
-    if (v2 <= v1) errors.push(`V2 Vitesse (${v2}) doit être > V1 Vitesse (${v1})`);
-  } catch (e) { errors.push(e.message); }
+  if (isBike) {
+    try {
+      const p2 = validateNumber(data.vt2.power, CONFIG.VALIDATION.POWER_MIN, CONFIG.VALIDATION.POWER_MAX, "V2 Puissance");
+      const p1 = safeNum(data.vt1.power);
+      if (p2 <= p1) errors.push(`V2 Puissance (${p2}) doit être > V1 Puissance (${p1})`);
+    } catch (e) { errors.push(e.message); }
+  } else {
+    try {
+      const v2 = validateNumber(data.vt2.vitesse, CONFIG.VALIDATION.VITESSE_MIN, CONFIG.VALIDATION.VITESSE_MAX, "V2 Vitesse");
+      const v1 = safeNum(data.vt1.vitesse);
+      if (v2 <= v1) errors.push(`V2 Vitesse (${v2}) doit être > V1 Vitesse (${v1})`);
+    } catch (e) { errors.push(e.message); }
+  }
 
   try { validateNumber(data.peakVO2.vo2, CONFIG.VALIDATION.VO2_MIN, CONFIG.VALIDATION.VO2_MAX, "VO2 Peak"); } catch (e) { errors.push(e.message); }
   try { validateNumber(data.peakVO2.vo2kg, 0, 100, "VO2 Peak/kg"); } catch (e) { errors.push(e.message); }
@@ -138,9 +155,11 @@ const parseXMLSafe = (xmlString) => {
     throw new ValidationError("XML mal formé: " + parserError.textContent);
   }
 
-  const data = { patient: {}, test: {}, vt1: {}, vt2: {}, peakVO2: {}, measurements: [] };
+  const data = { patient: {}, test: {}, vt1: {}, vt2: {}, peakVO2: {}, measurements: [], testType: "run" };
 
   let section = "", headers = [], inMeas = false;
+  let hasSpeedData = false;
+  let hasPowerData = false;
 
   try {
     Array.from(doc.getElementsByTagName("Row")).forEach((row) => {
@@ -200,6 +219,13 @@ const parseXMLSafe = (xmlString) => {
           data.vt1.vitesse = vals[5];
           data.vt2.vitesse = vals[8];
           data.peakVO2.vitesse = vals[11];
+          hasSpeedData = true;
+        }
+        if (first === "TT") {
+          data.vt1.power = vals[5];
+          data.vt2.power = vals[8];
+          data.peakVO2.power = vals[11];
+          hasPowerData = true;
         }
         if (first === "V'E") {
           data.vt1.ve = vals[5];
@@ -236,6 +262,17 @@ const parseXMLSafe = (xmlString) => {
     throw new ValidationError("Erreur lors du parsing XML: " + e.message);
   }
 
+  // Detect test type based on available data
+  if (hasPowerData && !hasSpeedData) {
+    data.testType = "bike";
+  } else if (hasSpeedData && !hasPowerData) {
+    data.testType = "run";
+  } else if (hasPowerData && hasSpeedData) {
+    // Both present - use power if speed values are zero or invalid
+    const hasValidSpeed = safeNum(data.vt1.vitesse) > 0 || safeNum(data.vt2.vitesse) > 0;
+    data.testType = hasValidSpeed ? "run" : "bike";
+  }
+
   return data;
 };
 
@@ -250,6 +287,15 @@ const ZCOL = {
   Z5: getComputedStyle(document.documentElement).getPropertyValue("--z5").trim(),
 };
 
+// Couleurs opaques pour les graphiques Recharts
+const ZCOL_CHART = {
+  Z1: "#DBEAFE",
+  Z2: "#DCFCE7",
+  Z3: "#FEF9C3",
+  Z4: "#FFEDD5",
+  Z5: "#FFE4E6",
+};
+
 const ZHEX = {
   Z1: "DBEAFE",
   Z2: "DCFCE7",
@@ -260,7 +306,13 @@ const ZHEX = {
   BORDER: "94A3B8",
 };
 
-const zoneOfFc = (fc, fc1, fc2) => {
+const zoneOfFc = (fc, fc1, fc2, sportType = "endurance") => {
+  if (sportType === "other") {
+    if (fc < fc1) return "Z1";
+    if (fc < fc2) return "Z2";
+    return "Z3";
+  }
+
   const mid = Math.round((fc1 + fc2) / 2);
   const z4max = Math.round(fc2 * 1.05);
   if (fc < fc1) return "Z1";
@@ -270,7 +322,7 @@ const zoneOfFc = (fc, fc1, fc2) => {
   return "Z5";
 };
 
-const buildZoneSegments = (cd, fc1, fc2) => {
+const buildZoneSegments = (cd, fc1, fc2, sportType) => {
   if (!cd?.length) return [];
   const pts = cd
     .filter((p) => Number.isFinite(p.timeSeconds) && Number.isFinite(p.fc))
@@ -279,11 +331,11 @@ const buildZoneSegments = (cd, fc1, fc2) => {
   if (!pts.length) return [];
 
   const segs = [];
-  let curZ = zoneOfFc(pts[0].fc, fc1, fc2);
+  let curZ = zoneOfFc(pts[0].fc, fc1, fc2, sportType);
   let startX = pts[0].timeSeconds;
 
   for (let i = 1; i < pts.length; i++) {
-    const z = zoneOfFc(pts[i].fc, fc1, fc2);
+    const z = zoneOfFc(pts[i].fc, fc1, fc2, sportType);
     if (z !== curZ) {
       const endX = pts[i].timeSeconds;
       if (endX > startX) segs.push({ z: curZ, x1: startX, x2: endX });
@@ -329,7 +381,8 @@ const getExData = (m) => {
 };
 
 const smooth = (d, w = 30) => {
-  if (!d || d.length < w) return d.map((p) => ({ ...p, vo2S: p.vo2, veS: p.ve }));
+  if (!d || d.length < w) return d.map((p) => ({ ...p, vo2S: p.vo2, fcS: Math.round(win.reduce((a, x) => a + x.fc, 0) / win.length),
+      veS: p.ve }));
   const r = Math.max(1, Math.floor(d.length / 2000));
   const s = d.filter((_, i) => i % r === 0);
 
@@ -340,27 +393,45 @@ const smooth = (d, w = 30) => {
     return {
       ...p,
       vo2S: Math.round((win.reduce((a, x) => a + x.vo2, 0) / win.length) * 100) / 100,
+      fcS: Math.round(win.reduce((a, x) => a + x.fc, 0) / win.length),
       veS: Math.round((win.reduce((a, x) => a + x.ve, 0) / win.length) * 100) / 100,
     };
   });
 };
 
-const calcZones = (fc1, fc2, s1, s2) => {
+const calcZones = (sportType, fc1, fc2, s1, s2, testType = "run") => {
+  const formatValue = (v) => Math.round(v * 10) / 10;
+  const isDecimal = testType === "run"; // km/h uses decimals, Watts use integers
+  const unit = testType === "bike" ? " W" : " km/h";
+
+  const formatWithUnit = (v) => {
+    if (isDecimal) return `${formatValue(v)}${unit}`;
+    return `${Math.round(v)}${unit}`;
+  };
+
+  if (sportType === "other") {
+    return [
+      { z: "Z1", fc: `< ${fc1}`, sp: `< ${formatWithUnit(s1)}`, det: "Sous V1 (seuil ventilatoire 1)", col: ZCOL.Z1 },
+      { z: "Z2", fc: `${fc1} – ${fc2}`, sp: `${formatWithUnit(s1)} – ${formatWithUnit(s2)}`, det: "Entre V1 et V2", col: ZCOL.Z2 },
+      { z: "Z3", fc: `> ${fc2}`, sp: `> ${formatWithUnit(s2)}`, det: "Au-dessus de V2 (seuil ventilatoire 2)", col: ZCOL.Z3 },
+    ];
+  }
+
   const mid = Math.round((fc1 + fc2) / 2);
-  const mids = Math.round(((s1 + s2) / 2) * 10) / 10;
+  const mids = (s1 + s2) / 2;
   const z4fc = Math.round(fc2 * 1.05);
-  const z4s = Math.round(s2 * 1.05 * 10) / 10;
+  const z4s = s2 * 1.05;
 
   return [
-    { z: "Z1", fc: `< ${fc1}`, sp: `< ${s1.toFixed(1)}`, det: "Sous V1 (seuil ventilatoire 1)", col: ZCOL.Z1 },
-    { z: "Z2", fc: `${fc1} – ${mid}`, sp: `${s1.toFixed(1)} – ${mids.toFixed(1)}`, det: "Entre V1 et le milieu (S1+S2)/2", col: ZCOL.Z2 },
-    { z: "Z3", fc: `${mid} – ${fc2}`, sp: `${mids.toFixed(1)} – ${s2.toFixed(1)}`, det: "Entre le milieu et V2 (seuil ventilatoire 2)", col: ZCOL.Z3 },
-    { z: "Z4", fc: `${fc2} – ${z4fc}`, sp: `${s2.toFixed(1)} – ${z4s.toFixed(1)}`, det: "Au-dessus de V2 (jusqu'à +5 %)", col: ZCOL.Z4 },
-    { z: "Z5", fc: `> ${z4fc}`, sp: `> ${z4s.toFixed(1)}`, det: "Très au-dessus de V2 (> +5 %)", col: ZCOL.Z5 },
+    { z: "Z1", fc: `< ${fc1}`, sp: `< ${formatWithUnit(s1)}`, det: "Sous V1 (seuil ventilatoire 1)", col: ZCOL.Z1 },
+    { z: "Z2", fc: `${fc1} – ${mid}`, sp: `${formatWithUnit(s1)} – ${formatWithUnit(mids)}`, det: "Entre V1 et le milieu (S1+S2)/2", col: ZCOL.Z2 },
+    { z: "Z3", fc: `${mid} – ${fc2}`, sp: `${formatWithUnit(mids)} – ${formatWithUnit(s2)}`, det: "Entre le milieu et V2 (seuil ventilatoire 2)", col: ZCOL.Z3 },
+    { z: "Z4", fc: `${fc2} – ${z4fc}`, sp: `${formatWithUnit(s2)} – ${formatWithUnit(z4s)}`, det: "Au-dessus de V2 (jusqu'à +5 %)", col: ZCOL.Z4 },
+    { z: "Z5", fc: `> ${z4fc}`, sp: `> ${formatWithUnit(z4s)}`, det: "Très au-dessus de V2 (> +5 %)", col: ZCOL.Z5 },
   ];
 };
 
-const genRec = (fc1, fc2, s1, vo2) => {
+const genRec = (fc1, fc2, s1, vo2, testType = "run") => {
   const w = fc2 - fc1;
   const lvl = vo2 < 35 ? "D" : vo2 >= 45 ? "A" : "I";
   const z2w = Math.round((fc1 + fc2) / 2) - fc1;
@@ -371,15 +442,18 @@ const genRec = (fc1, fc2, s1, vo2) => {
     w < 18 ? `Zones modérées (${w} bpm). Bonne flexibilité.` :
     `Zones bien espacées (${w} bpm). Excellente adaptation.`;
 
+  const intensityUnit = testType === "bike" ? `${Math.round(s1)} W` : `${s1.toFixed(1)} km/h`;
+  const activityType = testType === "bike" ? "vélo" : "course";
+
   let pri, comp, hi;
   if (lvl === "D") {
     pri = `Z2: 3-4×/sem (30-60 min) sous ${fc1} bpm. Construire la base aérobie.`;
-    comp = `Z1: récup active (marche, footing lent). Régularité > intensité.`;
+    comp = `Z1: récup active (${testType === "bike" ? "pédalage léger" : "marche, footing lent"}). Régularité > intensité.`;
     hi = `Z3-5: éviter 8-12 semaines. Focus volume Z2.`;
   } else if (lvl === "A") {
-    pri = `Z2: 2-3×/sem (60-120 min) à ${s1.toFixed(1)} km/h. Endurance lipidique.`;
-    comp = `Z3: 1-2×/sem tempo (20-40 min) ou 4×10 min progressif.`;
-    hi = `Z4-5: 1×/sem intervalles/côtes. 48h récup après.`;
+    pri = `Z2: 2-3×/sem (60-120 min) à ${intensityUnit}. Endurance lipidique.`;
+    comp = `Z3: 1-2×/sem tempo (20-40 min) ou 4×10 min progressif en ${activityType}.`;
+    hi = `Z4-5: 1×/sem intervalles${testType === "run" ? "/côtes" : ""}. 48h récup après.`;
   } else {
     pri = `Z2: 2-3×/sem (45-90 min) allure confortable. Base aérobie.`;
     comp = `Z3: 1×/sem blocs 5-10 min (3-4×8 min) + récup courte.`;
@@ -449,7 +523,10 @@ const captureChartAttempt = async (id) => {
 // ==========================================
 // GÉNÉRATION DOCX
 // ==========================================
-const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg) => {
+const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType = "run") => {
+  const intensityLabel = testType === "bike" ? "Puissance (W)" : "Vitesse (km/h)";
+  const intensityUnit = testType === "bike" ? "W" : "km/h";
+  const formatIntensity = (v) => testType === "bike" ? Math.round(v) : v.toFixed(1);
   const border = { style: BorderStyle.SINGLE, size: 1, color: "94A3B8" };
   const bs = { top: border, bottom: border, left: border, right: border };
 
@@ -459,23 +536,23 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
   const ch = [
     new Paragraph({
       alignment: AlignmentType.CENTER,
-      spacing: { after: 120 },
+      spacing: { after: 100 },
       children: [new TextRun({ text: "Compte rendu d'épreuve d'effort – Endurance", bold: true, size: 32 })],
     }),
     new Paragraph({
-      spacing: { after: 80 },
+      spacing: { after: 60 },
       children: [
         new TextRun({ text: `Patient${data.patient.sexe === "femme" ? "e" : ""}: `, bold: true, size: 22 }),
         new TextRun({ text: name, size: 22 }),
       ],
     }),
-    new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: `Âge: ${age} ans | Poids: ${poids}`, size: 22 })] }),
-    new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: `VO₂peak: ${vo2.toFixed(2)} L/min (${vo2kg} ml·kg⁻¹·min⁻¹)`, size: 22 })] }),
+    new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: `Âge: ${age} ans | Poids: ${poids}`, size: 22 })] }),
+    new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: `VO₂peak: ${vo2.toFixed(2)} L/min (${vo2kg} ml·kg⁻¹·min⁻¹)`, size: 22 })] }),
     new Paragraph({
-      spacing: { after: 120 },
-      children: [new TextRun({ text: `Seuils: V1=${fc1} bpm/${s1} km/h ; V2=${fc2} bpm/${s2} km/h`, size: 22 })],
+      spacing: { after: 100 },
+      children: [new TextRun({ text: `Seuils: V1=${fc1} bpm/${formatIntensity(s1)} ${intensityUnit} ; V2=${fc2} bpm/${formatIntensity(s2)} ${intensityUnit}`, size: 22 })],
     }),
-    new Paragraph({ spacing: { before: 80, after: 60 }, children: [new TextRun({ text: "Zones d'entraînement personnalisées", bold: true, size: 26 })] }),
+    new Paragraph({ spacing: { before: 60, after: 50 }, children: [new TextRun({ text: "Zones d'entraînement personnalisées", bold: true, size: 26 })] }),
   ];
 
   ch.push(
@@ -486,7 +563,7 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
           children: [
             new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Zone", bold: true, color: "FFFFFF", size: 20 })] })] }),
             new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "FC (bpm)", bold: true, color: "FFFFFF", size: 20 })] })] }),
-            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Vitesse (km/h)", bold: true, color: "FFFFFF", size: 20 })] })] }),
+            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: intensityLabel, bold: true, color: "FFFFFF", size: 20 })] })] }),
             new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Détermination (seuils)", bold: true, color: "FFFFFF", size: 20 })] })] }),
           ],
         }),
@@ -504,19 +581,20 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
     }),
   );
 
-  ch.push(new Paragraph({ spacing: { before: 120, after: 60 }, children: [new TextRun({ text: "VO₂ et VE avec seuils et zones", bold: true, size: 26 })] }));
+  ch.push(new Paragraph({ spacing: { before: 100, after: 50 }, children: [new TextRun({ text: "VO₂ et VE avec seuils et zones", bold: true, size: 26 })] }));
 
   const pushChart = (cap, title) => {
     if (!cap) {
-      ch.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: `${title} - capture indisponible`, italic: true, color: "999999", size: 20 })] }));
+      ch.push(new Paragraph({ spacing: { after: 30 }, children: [new TextRun({ text: `${title} - capture indisponible`, italic: true, color: "999999", size: 20 })] }));
       return;
     }
     const targetW = 520;
     const targetH = Math.round(targetW * (cap.h / cap.w));
-    ch.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: title, bold: true, size: 22 })] }));
+    ch.push(new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: title, bold: true, size: 22 })] }));
     ch.push(
       new Paragraph({
         alignment: AlignmentType.CENTER,
+        spacing: { after: 40 },
         children: [new ImageRun({ type: "png", data: b64ToU8(cap.b64), transformation: { width: targetW, height: targetH } })],
       }),
     );
@@ -526,26 +604,26 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
   pushChart(veCap, "Graphique VE");
 
   ch.push(new Paragraph({ children: [new PageBreak()] }));
-  ch.push(new Paragraph({ spacing: { before: 60, after: 80 }, children: [new TextRun({ text: "Recommandations", bold: true, size: 26 })] }));
-  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.ana, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.pri, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.comp, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.hi, size: 22 })] }));
-  if (rec.spec) ch.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: rec.spec, italics: true, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: rec.fu, italics: true, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { before: 50, after: 60 }, children: [new TextRun({ text: "Recommandations", bold: true, size: 26 })] }));
+  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.ana, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.pri, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.comp, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.hi, size: 22 })] }));
+  if (rec.spec) ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.spec, italics: true, size: 22 })] }));
+  ch.push(new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: rec.fu, italics: true, size: 22 })] }));
 
   return new Document({
     styles: { default: { document: { run: { font: "Arial", size: 22 } } } },
-    sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 720, right: 720, bottom: 720, left: 720 } } }, children: ch }],
+    sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 600, right: 720, bottom: 600, left: 720 } } }, children: ch }],
   });
 };
 
-const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, setExp, setErr) => {
+const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType, setExp, setErr) => {
   setExp(true);
   setErr(null);
   try {
     await waitPaint();
-    const doc = await genDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg);
+    const doc = await genDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType);
     const blob = await Packer.toBlob(doc);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -567,12 +645,21 @@ export default function App() {
   const [load, setLoad] = useState(false);
   const [exp, setExp] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [sportType, setSportType] = useState("endurance");
 
   const onFile = useCallback((f) => {
     if (!f) { setErr(new ValidationError("Aucun fichier sélectionné")); return; }
     if (!f.name.endsWith(".xml")) { setErr(new ValidationError("Format invalide. Fichier XML requis.")); return; }
     if (f.size > CONFIG.MAX_FILE_SIZE_MB * 1024 * 1024) { setErr(new ValidationError(`Fichier trop volumineux (max ${CONFIG.MAX_FILE_SIZE_MB}MB)`)); return; }
 
+    setErr(null);
+    setData(null);
+    setPendingFile(f);
+  }, []);
+
+  const processPendingFile = useCallback(() => {
+    if (!pendingFile) { setErr(new ValidationError("Aucun fichier sélectionné")); return; }
     setLoad(true);
     setErr(null);
 
@@ -585,6 +672,7 @@ export default function App() {
         validateParsedData(parsed);
         setData(parsed);
         setErr(null);
+        setPendingFile(null);
       } catch (x) {
         console.error("Erreur parsing/validation:", x);
         setErr(x);
@@ -593,8 +681,8 @@ export default function App() {
       }
     };
 
-    r.readAsText(f);
-  }, []);
+    r.readAsText(pendingFile);
+  }, [pendingFile]);;
 
   if (!data) {
     return (
@@ -631,6 +719,48 @@ export default function App() {
               <p className="text-gray-400 text-xs mt-2">Max {CONFIG.MAX_FILE_SIZE_MB}MB</p>
             </label>
           </div>
+          {pendingFile && (
+            <div className="mt-4 space-y-3">
+              <div className="meta-card text-left">
+                <div className="text-[12px] font-extrabold text-slate-800 mb-2">Type de sport</div>
+                <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                  <select
+                    className="w-full sm:w-auto border border-slate-300 rounded-xl px-3 py-2 text-[13px] bg-white"
+                    value={sportType}
+                    onChange={(e) => setSportType(e.target.value)}
+                    aria-label="Choisir le type de sport"
+                  >
+                    <option value="endurance">Endurance (5 zones)</option>
+                    <option value="other">Autres sports (3 zones)</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={processPendingFile}
+                    disabled={load}
+                    className={`w-full sm:w-auto px-4 py-2 rounded-xl font-extrabold text-white ${
+                      load ? "bg-slate-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                    }`}
+                  >
+                    {load ? "Traitement..." : "Générer le rapport"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPendingFile(null)}
+                    disabled={load}
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl font-extrabold border border-slate-300 bg-white hover:bg-slate-50"
+                  >
+                    Changer de fichier
+                  </button>
+                </div>
+                <div className="text-[12px] text-slate-600 mt-2 truncate">
+                  Fichier sélectionné : <span className="font-semibold">{pendingFile.name}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
 
           {err && <ErrorDisplay error={err} onDismiss={() => setErr(null)} />}
         </div>
@@ -642,20 +772,27 @@ export default function App() {
   const age = calcAge(data.patient.dateNaissance, data.test.dateHeure);
   const poids = data.patient.poids || "-";
 
+  const testType = data.testType || "run";
+  const isBike = testType === "bike";
+
   const fc1 = safeNum(data.vt1.fc);
   const fc2 = safeNum(data.vt2.fc);
-  const s1 = safeNum(data.vt1.vitesse);
-  const s2 = safeNum(data.vt2.vitesse);
+  const s1 = isBike ? safeNum(data.vt1.power) : safeNum(data.vt1.vitesse);
+  const s2 = isBike ? safeNum(data.vt2.power) : safeNum(data.vt2.vitesse);
   const vo2 = safeNum(data.peakVO2.vo2);
   const vo2kg = safeNum(data.peakVO2.vo2kg);
 
-  const rec = genRec(fc1, fc2, s1, vo2kg);
+  const intensityLabel = isBike ? "Puissance" : "Vitesse";
+  const intensityUnit = isBike ? "W" : "km/h";
+
+  const rec = genRec(fc1, fc2, s1, vo2kg, testType);
 
   const cdRaw = smooth(getExData(data.measurements), 30);
   const cd = cdRaw.filter((p) => Number.isFinite(p.timeSeconds));
 
-  const zoneSegs = buildZoneSegments(cd, fc1, fc2);
-  const zonesTable = calcZones(fc1, fc2, s1, s2);
+  const zoneSegs = buildZoneSegments(cd, fc1, fc2, sportType);
+  const zonesTable = calcZones(sportType, fc1, fc2, s1, s2, testType);
+  const zonesList = sportType === "other" ? ["Z1","Z2","Z3"] : ["Z1","Z2","Z3","Z4","Z5"];
 
   const CHART_MARGIN = { top: 8, right: 18, left: 28, bottom: 26 };
 
@@ -672,9 +809,9 @@ export default function App() {
           key={i}
           x1={s.x1}
           x2={s.x2}
-          ifFront={false}
-          fill={ZCOL[s.z]}
-          fillOpacity={1}
+          ifOverflow="extendDomain"
+          fill={ZCOL_CHART[s.z]}
+          fillOpacity={0.6}
           strokeOpacity={0}
         />
       ))}
@@ -705,7 +842,7 @@ export default function App() {
 
           <div className="flex gap-2">
             <button
-              onClick={() => dlDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, setExp, setErr)}
+              onClick={() => dlDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType, setExp, setErr)}
               disabled={exp}
               className={`px-4 py-2 rounded text-white font-medium transition-all ${exp ? "bg-gray-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700"}`}
               aria-label={exp ? "Export DOCX en cours" : "Exporter en DOCX"}
@@ -752,9 +889,21 @@ export default function App() {
               <div className="mt-1">
                 <b>VO₂peak :</b> {vo2.toFixed(2)} L/min ({vo2kg} ml·kg⁻¹·min⁻¹)
                 <span className="mx-2">|</span>
-                <b>V1 :</b> {fc1} bpm / {s1} km/h
+                <b>V1 :</b> {fc1} bpm / {isBike ? Math.round(s1) : s1.toFixed(1)} {intensityUnit}
                 <span className="mx-2">|</span>
-                <b>V2 :</b> {fc2} bpm / {s2} km/h
+                <b>V2 :</b> {fc2} bpm / {isBike ? Math.round(s2) : s2.toFixed(1)} {intensityUnit}
+              </div>
+            </div>
+
+            <div className="mt-3 meta-card">
+              <div className="text-[12px] font-extrabold text-slate-800 mb-2">Comprendre V1 et V2</div>
+              <div className="text-[12px] text-slate-700 space-y-2">
+                <p>
+                  V1 (seuil ventilatoire 1) correspond à l’intensité à partir de laquelle l’organisme commence à produire davantage de métabolites (notamment liés au métabolisme anaérobie), mais reste encore capable de les évacuer efficacement. À cette intensité, l’équilibre est maintenu : l’effort est durable, la respiration s’accélère légèrement mais reste contrôlée.
+                </p>
+                <p>
+                  V2 (seuil ventilatoire 2) correspond à une intensité plus élevée à partir de laquelle la production de métabolites devient supérieure à la capacité d’élimination de l’organisme. Cela entraîne une augmentation marquée de la ventilation et une fatigue qui s’installe plus rapidement. Au-dessus de V2, l’effort est efficace mais ne peut être maintenu que sur des durées limitées.
+                </p>
               </div>
             </div>
 
@@ -766,7 +915,7 @@ export default function App() {
                   <tr>
                     <th scope="col">Zone</th>
                     <th scope="col">FC (bpm)</th>
-                    <th scope="col">Vitesse (km/h)</th>
+                    <th scope="col">{intensityLabel} ({intensityUnit})</th>
                     <th scope="col">Détermination (seuils)</th>
                   </tr>
                 </thead>
@@ -821,7 +970,7 @@ export default function App() {
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} />
+              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} zones={zonesList} />
             </div>
           </div>
         </div>
@@ -830,7 +979,7 @@ export default function App() {
         <div className="a4-page">
           <div className="avoid-break">
             <div id="vec" className="chart-box">
-              <div className="chart-title">VE (moyenne 30 s) avec seuils et zones</div>
+              <div className="chart-title">FC (moyenne 30 s) avec seuils et zones</div>
               <div className="chart-inner">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={cd} margin={CHART_MARGIN}>
@@ -859,13 +1008,13 @@ export default function App() {
                     <YAxis
                       domain={["auto", "auto"]}
                       tick={{ fontSize: 10 }}
-                      label={{ value: "VE (L/min)", angle: -90, position: "insideLeft", fontSize: 10 }}
+                      label={{ value: "FC (bpm)", angle: -90, position: "insideLeft", fontSize: 10 }}
                     />
-                    <Line type="monotone" dataKey="veS" stroke="#1976d2" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="fcS" stroke="#1976d2" strokeWidth={2} dot={false} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
-              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} />
+              <ZoneLegend ZCOL={ZCOL} zoneLabel={zoneLabel} zones={zonesList} />
             </div>
           </div>
 
