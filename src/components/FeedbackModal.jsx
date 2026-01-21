@@ -8,35 +8,21 @@ export default function FeedbackModal({ isOpen, onClose }) {
   const endpoint = import.meta.env.VITE_FORMSPREE_ENDPOINT;
   const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
 
+  const formRef = useRef(null);
   const captchaElRef = useRef(null);
   const widgetIdRef = useRef(null);
-
-  const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
-  const [bot, setBot] = useState("");
 
   const [sending, setSending] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState(null);
 
-  const pendingSubmitRef = useRef(false);
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [bot, setBot] = useState("");
 
-  const resetForm = () => {
-    setEmail("");
-    setMessage("");
-    setBot("");
-    setSuccess(false);
-    setError(null);
-    pendingSubmitRef.current = false;
-
-    if (window.grecaptcha && widgetIdRef.current != null) {
-      try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
-    }
-  };
-
+  // render reCAPTCHA v2 invisible
   useEffect(() => {
     if (!isOpen) return;
-
     setError(null);
     setSuccess(false);
 
@@ -50,10 +36,7 @@ export default function FeedbackModal({ isOpen, onClose }) {
         sitekey: siteKey,
         size: "invisible",
         callback: (token) => {
-          if (pendingSubmitRef.current) {
-            pendingSubmitRef.current = false;
-            void submitWithToken(token);
-          }
+          void submitWithToken(token);
         },
         "expired-callback": () => setError("reCAPTCHA expiré. Réessayez."),
         "error-callback": () => setError("reCAPTCHA indisponible. Réessayez."),
@@ -79,17 +62,31 @@ export default function FeedbackModal({ isOpen, onClose }) {
     return null;
   };
 
+  const resetForm = () => {
+    setEmail("");
+    setMessage("");
+    setBot("");
+    setError(null);
+    setSuccess(false);
+
+    if (window.grecaptcha && widgetIdRef.current != null) {
+      try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
+    }
+  };
+
   const submitWithToken = async (token) => {
     if (!endpoint) return setError("VITE_FORMSPREE_ENDPOINT manquant (.env)");
+    if (!formRef.current) return setError("Formulaire introuvable");
 
     setSending(true);
     setError(null);
 
     try {
-      const fd = new FormData();
-      fd.append("email", String(email).trim());
-      fd.append("message", String(message).trim().slice(0, 2000));
-      fd.append("g-recaptcha-response", token);
+      // FormData depuis un vrai <form> => Formspree récupère correctement email/message
+      const fd = new FormData(formRef.current);
+      fd.set("email", String(email).trim());
+      fd.set("message", String(message).trim().slice(0, 2000));
+      fd.set("g-recaptcha-response", token);
 
       await sendFormspree(fd, { endpoint });
 
@@ -99,7 +96,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
         onClose();
       }, 1200);
     } catch (err) {
-      console.error("Formspree error:", err);
       setError(err?.message || "Échec de l'envoi. Réessayez.");
       if (window.grecaptcha && widgetIdRef.current != null) {
         try { window.grecaptcha.reset(widgetIdRef.current); } catch {}
@@ -109,9 +105,11 @@ export default function FeedbackModal({ isOpen, onClose }) {
     }
   };
 
-  const handleSubmit = () => {
+  const onSubmit = (e) => {
+    e.preventDefault();
     setError(null);
 
+    // honeypot
     if (bot && bot.trim() !== "") {
       setSuccess(true);
       setTimeout(() => {
@@ -129,11 +127,9 @@ export default function FeedbackModal({ isOpen, onClose }) {
       return setError("reCAPTCHA non chargé. Vérifie le script dans index.html.");
     }
 
-    pendingSubmitRef.current = true;
     try {
       window.grecaptcha.execute(widgetIdRef.current);
     } catch {
-      pendingSubmitRef.current = false;
       setError("Impossible d'exécuter reCAPTCHA. Réessayez.");
     }
   };
@@ -153,80 +149,80 @@ export default function FeedbackModal({ isOpen, onClose }) {
           <>
             <h3 className="text-xl font-bold mb-4">Nous contacter</h3>
 
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-2">Votre email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full border rounded p-2"
-                placeholder="votre@email.com"
-                autoComplete="email"
-                maxLength={254}
-              />
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-sm font-medium mb-2">Votre message</label>
-              <textarea
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                className="w-full border rounded p-2 min-h-[120px]"
-                placeholder="Votre message..."
-                maxLength={2000}
-              />
-              <div className="text-xs text-gray-500 mt-1">{message.length}/2000</div>
-            </div>
-
-            <div className="hidden" aria-hidden="true">
-              <label>Website</label>
-              <input
-                name={BOT_FIELD}
-                value={bot}
-                onChange={(e) => setBot(e.target.value)}
-                tabIndex={-1}
-                autoComplete="off"
-              />
-            </div>
-
-            <div ref={captchaElRef} />
-
-            {error && (
-              <div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-                {error}
+            <form ref={formRef} onSubmit={onSubmit}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Votre email</label>
+                <input
+                  id="email"
+                  name="email"              // ✅ IMPORTANT
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full border rounded p-2"
+                  placeholder="votre@email.com"
+                  autoComplete="email"
+                  maxLength={254}
+                />
               </div>
-            )}
 
-            <div className="flex gap-2">
-              <button
-                onClick={handleSubmit}
-                disabled={sending}
-                className={`flex-1 py-2 rounded font-medium transition-colors ${
-                  sending ? "bg-gray-300 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
-                }`}
-                type="button"
-              >
-                {sending ? "⏳ Envoi..." : "Envoyer"}
-              </button>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Votre message</label>
+                <textarea
+                  id="message"
+                  name="message"            // ✅ IMPORTANT
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  className="w-full border rounded p-2 min-h-[120px]"
+                  placeholder="Votre message..."
+                  maxLength={2000}
+                />
+                <div className="text-xs text-gray-500 mt-1">{message.length}/2000</div>
+              </div>
 
-              <button
-                onClick={() => {
-                  resetForm();
-                  onClose();
-                }}
-                disabled={sending}
-                className="px-4 py-2 border rounded hover:bg-gray-50 disabled:opacity-50"
-                type="button"
-              >
-                Annuler
-              </button>
-            </div>
+              <div className="hidden" aria-hidden="true">
+                <label>Website</label>
+                <input
+                  name={BOT_FIELD}
+                  value={bot}
+                  onChange={(e) => setBot(e.target.value)}
+                  tabIndex={-1}
+                  autoComplete="off"
+                />
+              </div>
 
-            {(!endpoint || !siteKey) && (
-              <p className="mt-3 text-xs text-red-600">
-                ⚠️ Vérifie `.env` : VITE_FORMSPREE_ENDPOINT et VITE_RECAPTCHA_SITE_KEY
-              </p>
-            )}
+              {/* conteneur reCAPTCHA */}
+              <div ref={captchaElRef} />
+
+              {error && (
+                <div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={sending}
+                  className={`flex-1 py-2 rounded font-medium transition-colors ${
+                    sending ? "bg-gray-300 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
+                  }`}
+                >
+                  {sending ? "⏳ Envoi..." : "Envoyer"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetForm();
+                    onClose();
+                  }}
+                  disabled={sending}
+                  className="px-4 py-2 border rounded hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Annuler
+                </button>
+              </div>
+            </form>
           </>
         )}
       </div>

@@ -7,9 +7,8 @@ export async function sendFormspree(formData, { endpoint }) {
     mode: "cors",
     headers: {
       Accept: "application/json",
-      // ⚠️ surtout PAS de Content-Type ici (le navigateur le met avec boundary)
     },
-    body: formData,
+    body: formData, // ⚠️ pas de Content-Type
   });
 
   const ct = res.headers.get("content-type") || "";
@@ -22,6 +21,5 @@ export async function sendFormspree(formData, { endpoint }) {
       data?.errors?.[0]?.message || data?.error || `Erreur HTTP ${res.status}`;
     throw new Error(msg);
   }
-
   return data;
 }
