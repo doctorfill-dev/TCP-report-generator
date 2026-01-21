@@ -349,7 +349,25 @@ const buildZoneSegments = (cd, fc1, fc2, sportType) => {
   const lastX = pts[pts.length - 1].timeSeconds;
   if (lastX > startX) segs.push({ z: curZ, x1: startX, x2: lastX });
 
-  return segs;
+  // Filtrer les petits segments (< 15 secondes) et les fusionner avec le segment précédent
+  const MIN_SEGMENT_DURATION = 15;
+  const filtered = [];
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const duration = seg.x2 - seg.x1;
+
+    if (duration >= MIN_SEGMENT_DURATION) {
+      filtered.push(seg);
+    } else if (filtered.length > 0) {
+      // Fusionner avec le segment précédent en étendant sa durée
+      filtered[filtered.length - 1].x2 = seg.x2;
+    } else {
+      // Si c'est le premier segment et qu'il est trop court, le garder quand même
+      filtered.push(seg);
+    }
+  }
+
+  return filtered;
 };
 
 const zoneLabel = (z) =>
@@ -584,6 +602,22 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
     }),
   );
 
+  ch.push(new Paragraph({ spacing: { before: 80, after: 40 }, children: [new TextRun({ text: "Comprendre V1 et V2", bold: true, size: 24 })] }));
+  ch.push(new Paragraph({
+    spacing: { after: 40 },
+    children: [new TextRun({
+      text: "V1 (seuil ventilatoire 1) correspond à l'intensité à partir de laquelle l'organisme commence à produire davantage de métabolites (notamment liés au métabolisme anaérobie), mais reste encore capable de les évacuer efficacement. À cette intensité, l'équilibre est maintenu : l'effort est durable, la respiration s'accélère légèrement mais reste contrôlée.",
+      size: 20
+    })]
+  }));
+  ch.push(new Paragraph({
+    spacing: { after: 60 },
+    children: [new TextRun({
+      text: "V2 (seuil ventilatoire 2) correspond à une intensité plus élevée à partir de laquelle la production de métabolites devient supérieure à la capacité d'élimination de l'organisme. Cela entraîne une augmentation marquée de la ventilation et une fatigue qui s'installe plus rapidement. Au-dessus de V2, l'effort est efficace mais ne peut être maintenu que sur des durées limitées.",
+      size: 20
+    })]
+  }));
+
   ch.push(new Paragraph({ spacing: { before: 100, after: 50 }, children: [new TextRun({ text: "VO₂ et VE avec seuils et zones", bold: true, size: 26 })] }));
 
   const pushChart = (cap, title) => {
@@ -805,21 +839,6 @@ export default function App() {
     window.print();
   };
 
-  const ZoneAreas = () => (
-    <>
-      {zoneSegs.map((s, i) => (
-        <ReferenceArea
-          key={i}
-          x1={s.x1}
-          x2={s.x2}
-          ifOverflow="extendDomain"
-          fill={ZCOL_CHART[s.z]}
-          fillOpacity={0.6}
-          strokeOpacity={0}
-        />
-      ))}
-    </>
-  );
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -876,7 +895,7 @@ export default function App() {
 
       <div className="print-container mx-auto shadow-lg my-6 print:my-0 print:shadow-none" style={{ maxWidth: "210mm" }}>
         {/* PAGE 1 */}
-        <div className="a4-page page-split">
+        <div className="a4-page">
           <div className="avoid-break">
             <div className="report-title">Compte rendu de test d'effort</div>
             <div className="report-sub">VO₂ et VE avec seuils et zones</div>
@@ -943,7 +962,16 @@ export default function App() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={cd} margin={CHART_MARGIN}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
-                    <ZoneAreas />
+                    {zoneSegs.map((s, i) => (
+                      <ReferenceArea
+                        key={i}
+                        x1={s.x1}
+                        x2={s.x2}
+                        fill={ZCOL_CHART[s.z]}
+                        fillOpacity={0.6}
+                        strokeOpacity={0}
+                      />
+                    ))}
                     <ReferenceLine
                       x={cd.find((p) => p.fc >= fc1)?.timeSeconds || 0}
                       stroke="var(--zline1)"
@@ -987,7 +1015,16 @@ export default function App() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={cd} margin={CHART_MARGIN}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
-                    <ZoneAreas />
+                    {zoneSegs.map((s, i) => (
+                      <ReferenceArea
+                        key={i}
+                        x1={s.x1}
+                        x2={s.x2}
+                        fill={ZCOL_CHART[s.z]}
+                        fillOpacity={0.6}
+                        strokeOpacity={0}
+                      />
+                    ))}
                     <ReferenceLine
                       x={cd.find((p) => p.fc >= fc1)?.timeSeconds || 0}
                       stroke="var(--zline1)"
