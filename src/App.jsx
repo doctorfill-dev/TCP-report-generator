@@ -618,7 +618,7 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
     })]
   }));
 
-  ch.push(new Paragraph({ spacing: { before: 100, after: 50 }, children: [new TextRun({ text: "VO₂ et VE avec seuils et zones", bold: true, size: 26 })] }));
+  ch.push(new Paragraph({ spacing: { before: 100, after: 50 }, children: [new TextRun({ text: "VO₂ et FC avec seuils et zones", bold: true, size: 26 })] }));
 
   const pushChart = (cap, title) => {
     if (!cap) {
@@ -898,7 +898,7 @@ export default function App() {
         <div className="a4-page">
           <div className="avoid-break">
             <div className="report-title">Compte rendu de test d'effort</div>
-            <div className="report-sub">VO₂ et VE avec seuils et zones</div>
+            <div className="report-sub">VO₂ et FC avec seuils et zones</div>
 
             <div className="meta-card mt-3 text-[12px] text-slate-700">
               <div className="flex flex-wrap gap-x-6 gap-y-1">
