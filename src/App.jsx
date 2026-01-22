@@ -638,7 +638,7 @@ const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2
   };
 
   pushChart(vo2Cap, "Graphique VO₂");
-  pushChart(veCap, "Graphique VE");
+  pushChart(veCap, "Graphique FC");
 
   ch.push(new Paragraph({ children: [new PageBreak()] }));
   ch.push(new Paragraph({ spacing: { before: 50, after: 60 }, children: [new TextRun({ text: "Recommandations", bold: true, size: 26 })] }));
