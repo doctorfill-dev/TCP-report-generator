@@ -10,21 +10,9 @@ import {
   YAxis,
 } from "recharts";
 import html2canvas from "html2canvas";
-import {
-  AlignmentType,
-  BorderStyle,
-  Document,
-  ImageRun,
-  PageBreak,
-  Packer,
-  Paragraph,
-  ShadingType,
-  Table,
-  TableCell,
-  TableRow,
-  TextRun,
-  WidthType,
-} from "docx";
+import Docxtemplater from "docxtemplater";
+import PizZip from "pizzip";
+import ImageModule from "docxtemplater-image-module-free";
 
 import FeedbackModal from "./components/FeedbackModal.jsx";
 import ErrorDisplay from "./components/ErrorDisplay.jsx";
@@ -590,117 +578,12 @@ const captureChartAttempt = async (id) => {
 };
 
 // ==========================================
-// GÉNÉRATION DOCX
+// GÉNÉRATION DOCX AVEC TEMPLATE
 // ==========================================
-const genDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType = "run") => {
-  const intensityLabel = testType === "bike" ? "Puissance (W)" : "Vitesse (km/h)";
-  const intensityUnit = testType === "bike" ? "W" : "km/h";
-  const formatIntensity = (v) => testType === "bike" ? Math.round(v) : v.toFixed(1);
-  const border = { style: BorderStyle.SINGLE, size: 1, color: "94A3B8" };
-  const bs = { top: border, bottom: border, left: border, right: border };
-
-  const vo2Cap = await captureChartWithRetry("vo2c");
-  const veCap = await captureChartWithRetry("vec");
-
-  const ch = [
-    new Paragraph({
-      alignment: AlignmentType.CENTER,
-      spacing: { after: 100 },
-      children: [new TextRun({ text: "Compte rendu d'épreuve d'effort – Endurance", bold: true, size: 32 })],
-    }),
-    new Paragraph({
-      spacing: { after: 60 },
-      children: [
-        new TextRun({ text: `Patient${data.patient.sexe === "femme" ? "e" : ""}: `, bold: true, size: 22 }),
-        new TextRun({ text: name, size: 22 }),
-      ],
-    }),
-    new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: `Âge: ${age} ans | Poids: ${poids}`, size: 22 })] }),
-    new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: `VO₂peak: ${vo2.toFixed(2)} L/min (${vo2kg} ml·kg⁻¹·min⁻¹)`, size: 22 })] }),
-    new Paragraph({
-      spacing: { after: 100 },
-      children: [new TextRun({ text: `Seuils: V1=${fc1} bpm/${formatIntensity(s1)} ${intensityUnit} ; V2=${fc2} bpm/${formatIntensity(s2)} ${intensityUnit}`, size: 22 })],
-    }),
-    new Paragraph({ spacing: { before: 60, after: 50 }, children: [new TextRun({ text: "Zones d'entraînement personnalisées", bold: true, size: 26 })] }),
-  ];
-
-  ch.push(
-    new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [
-        new TableRow({
-          children: [
-            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Zone", bold: true, color: "FFFFFF", size: 20 })] })] }),
-            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "FC (bpm)", bold: true, color: "FFFFFF", size: 20 })] })] }),
-            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: intensityLabel, bold: true, color: "FFFFFF", size: 20 })] })] }),
-            new TableCell({ borders: bs, shading: { fill: ZHEX.HEADER, type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: "Détermination (seuils)", bold: true, color: "FFFFFF", size: 20 })] })] }),
-          ],
-        }),
-        ...zonesTable.map((z) =>
-          new TableRow({
-            children: [
-              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.z, bold: true, size: 20 })] })] }),
-              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.fc, size: 20 })] })] }),
-              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.sp, size: 20 })] })] }),
-              new TableCell({ borders: bs, shading: { fill: ZHEX[z.z], type: ShadingType.CLEAR }, children: [new Paragraph({ children: [new TextRun({ text: z.det, size: 20 })] })] }),
-            ],
-          }),
-        ),
-      ],
-    }),
-  );
-
-  ch.push(new Paragraph({ spacing: { before: 80, after: 40 }, children: [new TextRun({ text: "Comprendre V1 et V2", bold: true, size: 24 })] }));
-  ch.push(new Paragraph({
-    spacing: { after: 40 },
-    children: [new TextRun({
-      text: "V1 (seuil ventilatoire 1) correspond à l'intensité à partir de laquelle l'organisme commence à produire davantage de métabolites (notamment liés au métabolisme anaérobie), mais reste encore capable de les évacuer efficacement. À cette intensité, l'équilibre est maintenu : l'effort est durable, la respiration s'accélère légèrement mais reste contrôlée.",
-      size: 20
-    })]
-  }));
-  ch.push(new Paragraph({
-    spacing: { after: 60 },
-    children: [new TextRun({
-      text: "V2 (seuil ventilatoire 2) correspond à une intensité plus élevée à partir de laquelle la production de métabolites devient supérieure à la capacité d'élimination de l'organisme. Cela entraîne une augmentation marquée de la ventilation et une fatigue qui s'installe plus rapidement. Au-dessus de V2, l'effort est efficace mais ne peut être maintenu que sur des durées limitées.",
-      size: 20
-    })]
-  }));
-
-  ch.push(new Paragraph({ spacing: { before: 100, after: 50 }, children: [new TextRun({ text: "VO₂ et FC avec seuils et zones", bold: true, size: 26 })] }));
-
-  const pushChart = (cap, title) => {
-    if (!cap) {
-      ch.push(new Paragraph({ spacing: { after: 30 }, children: [new TextRun({ text: `${title} - capture indisponible`, italic: true, color: "999999", size: 20 })] }));
-      return;
-    }
-    const targetW = 520;
-    const targetH = Math.round(targetW * (cap.h / cap.w));
-    ch.push(new Paragraph({ spacing: { before: 30, after: 30 }, children: [new TextRun({ text: title, bold: true, size: 22 })] }));
-    ch.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { after: 40 },
-        children: [new ImageRun({ type: "png", data: b64ToU8(cap.b64), transformation: { width: targetW, height: targetH } })],
-      }),
-    );
-  };
-
-  pushChart(vo2Cap, "Graphique VO₂");
-  pushChart(veCap, "Graphique FC");
-
-  ch.push(new Paragraph({ children: [new PageBreak()] }));
-  ch.push(new Paragraph({ spacing: { before: 50, after: 60 }, children: [new TextRun({ text: "Recommandations", bold: true, size: 26 })] }));
-  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.ana, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.pri, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.comp, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.hi, size: 22 })] }));
-  if (rec.spec) ch.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: rec.spec, italics: true, size: 22 })] }));
-  ch.push(new Paragraph({ spacing: { after: 100 }, children: [new TextRun({ text: rec.fu, italics: true, size: 22 })] }));
-
-  return new Document({
-    styles: { default: { document: { run: { font: "Arial", size: 22 } } } },
-    sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 600, right: 720, bottom: 600, left: 720 } } }, children: ch }],
-  });
+const loadTemplate = async () => {
+  const response = await fetch("/template.docx");
+  if (!response.ok) throw new Error("Template non trouvée");
+  return await response.arrayBuffer();
 };
 
 const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType, setExp, setErr) => {
@@ -708,8 +591,103 @@ const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2,
   setErr(null);
   try {
     await waitPaint();
-    const doc = await genDocx(data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2, vo2, vo2kg, testType);
-    const blob = await Packer.toBlob(doc);
+
+    // Capture charts as images (zones table is now a real Word table, not an image)
+    const vo2Cap = await captureChartWithRetry("vo2c");
+    const fcCap = await captureChartWithRetry("vec");
+
+    console.log("Captures:", { vo2Cap: !!vo2Cap, fcCap: !!fcCap });
+
+    // Load template
+    const templateBuffer = await loadTemplate();
+    const zip = new PizZip(templateBuffer);
+
+    // Store image dimensions for proper aspect ratio
+    const imageDimensions = {
+      chartVO2: vo2Cap ? { w: vo2Cap.w, h: vo2Cap.h } : { w: 800, h: 300 },
+      chartFC: fcCap ? { w: fcCap.w, h: fcCap.h } : { w: 800, h: 300 },
+    };
+
+    // Configure image module for docxtemplater
+    const imageOpts = {
+      centered: false,
+      getImage: function(tagValue) {
+        return b64ToU8(tagValue);
+      },
+      getSize: function(img, tagValue, tagName) {
+        // Get original dimensions and calculate proper size preserving aspect ratio
+        const dims = imageDimensions[tagName] || { w: 800, h: 300 };
+        const targetWidth = 550; // Width in pixels for the document
+        const aspectRatio = dims.h / dims.w;
+        const targetHeight = Math.round(targetWidth * aspectRatio);
+        return [targetWidth, targetHeight];
+      },
+    };
+    const imageModule = new ImageModule(imageOpts);
+
+    // Create docxtemplater instance
+    const doc = new Docxtemplater(zip, {
+      modules: [imageModule],
+      paragraphLoop: true,
+      linebreaks: true,
+    });
+
+    // Prepare intensity formatting
+    const intensityLabel = testType === "bike" ? "Puissance (W)" : "Vitesse (km/h)";
+    const intensityUnit = testType === "bike" ? "W" : "km/h";
+    const formatIntensity = (v) => testType === "bike" ? Math.round(v) : v.toFixed(1);
+
+    // Create a 1x1 transparent PNG as placeholder for missing images
+    const emptyImageB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    // Prepare individual zone data (more reliable than loops for Word tables)
+    const z1 = zonesTable.find(z => z.z === "Z1") || {};
+    const z2 = zonesTable.find(z => z.z === "Z2") || {};
+    const z3 = zonesTable.find(z => z.z === "Z3") || {};
+    const z4 = zonesTable.find(z => z.z === "Z4") || {};
+    const z5 = zonesTable.find(z => z.z === "Z5") || {};
+
+    // Prepare template data - images as base64 strings for the image module
+    const templateData = {
+      titre: "Compte rendu d'epreuve d'effort - Endurance",
+      patientLabel: data.patient.sexe === "femme" ? "Patiente" : "Patient",
+      patientNom: name,
+      age: String(age),
+      poids: poids,
+      vo2: vo2.toFixed(2),
+      vo2kg: String(vo2kg),
+      seuilsInfo: `V1=${fc1} bpm/${formatIntensity(s1)} ${intensityUnit} ; V2=${fc2} bpm/${formatIntensity(s2)} ${intensityUnit}`,
+      // Individual zone data
+      z1zone: z1.z || "", z1fc: z1.fc || "", z1sp: z1.sp || "", z1det: z1.det || "",
+      z2zone: z2.z || "", z2fc: z2.fc || "", z2sp: z2.sp || "", z2det: z2.det || "",
+      z3zone: z3.z || "", z3fc: z3.fc || "", z3sp: z3.sp || "", z3det: z3.det || "",
+      z4zone: z4.z || "", z4fc: z4.fc || "", z4sp: z4.sp || "", z4det: z4.det || "",
+      z5zone: z5.z || "", z5fc: z5.fc || "", z5sp: z5.sp || "", z5det: z5.det || "",
+      // Flag for 3-zone mode (other sports)
+      has5zones: zonesTable.length === 5 ? "true" : "",
+      intensityLabel: intensityLabel,
+      explicationV1: "V1 (seuil ventilatoire 1) correspond a l'intensite a partir de laquelle l'organisme commence a produire davantage de metabolites (notamment lies au metabolisme anaerobie), mais reste encore capable de les evacuer efficacement. A cette intensite, l'equilibre est maintenu : l'effort est durable, la respiration s'accelere legerement mais reste controlee.",
+      explicationV2: "V2 (seuil ventilatoire 2) correspond a une intensite plus elevee a partir de laquelle la production de metabolites devient superieure a la capacite d'elimination de l'organisme. Cela entraine une augmentation marquee de la ventilation et une fatigue qui s'installe plus rapidement. Au-dessus de V2, l'effort est efficace mais ne peut etre maintenu que sur des durees limitees.",
+      chartVO2: vo2Cap ? vo2Cap.b64 : emptyImageB64,
+      chartFC: fcCap ? fcCap.b64 : emptyImageB64,
+      recAna: rec.ana,
+      recPri: rec.pri,
+      recComp: rec.comp,
+      recHi: rec.hi,
+      recSpec: rec.spec || "",
+      recFu: rec.fu,
+    };
+
+    // Render template
+    doc.render(templateData);
+
+    // Generate blob
+    const blob = doc.getZip().generate({
+      type: "blob",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+
+    // Download
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `Rapport_TCP_${name.replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.docx`;
@@ -881,11 +859,6 @@ export default function App() {
 
   const CHART_MARGIN = { top: 8, right: 18, left: 28, bottom: 26 };
 
-  const printNow = async () => {
-    if (document.fonts?.ready) await document.fonts.ready;
-    await waitPaint();
-    window.print();
-  };
 
 
   return (
@@ -921,14 +894,6 @@ export default function App() {
               {exp ? "⏳ Export..." : "📝 DOCX"}
             </button>
 
-            <button
-              onClick={printNow}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium transition-colors"
-              aria-label="Imprimer ou exporter en PDF"
-              type="button"
-            >
-              🖨️ PDF
-            </button>
           </div>
         </div>
       </div>
@@ -1003,8 +968,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="avoid-break">
-            <div id="vo2c" className="chart-box">
+          <div id="vo2c" className="avoid-break">
+            <div className="chart-box">
               <div className="chart-title">VO₂ (moyenne 30 s) avec seuils et zones</div>
               <div className="chart-inner">
                 <ResponsiveContainer width="100%" height="100%">
@@ -1056,8 +1021,8 @@ export default function App() {
 
         {/* PAGE 2 */}
         <div className="a4-page">
-          <div className="avoid-break">
-            <div id="vec" className="chart-box">
+          <div id="vec" className="avoid-break">
+            <div className="chart-box">
               <div className="chart-title">FC (moyenne 30 s) avec seuils et zones</div>
               <div className="chart-inner">
                 <ResponsiveContainer width="100%" height="100%">
