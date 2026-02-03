@@ -262,6 +262,53 @@ const parseXMLSafe = (xmlString) => {
     throw new ValidationError("Erreur lors du parsing XML: " + e.message);
   }
 
+  // Fallback: extract power from measurements if not in Summary table
+  // This handles XML files where TT (power) row is missing from Summary but present in MeasurementData
+  if (!hasPowerData && data.measurements.length > 0) {
+    const hasTTInMeasurements = data.measurements.some(m => m["TT"] !== undefined && m["TT"] !== "");
+
+    if (hasTTInMeasurements && data.vt1.fc && data.vt2.fc && data.peakVO2.fc) {
+      const fc1Target = safeNum(data.vt1.fc);
+      const fc2Target = safeNum(data.vt2.fc);
+      const fcPeakTarget = safeNum(data.peakVO2.fc);
+
+      // Find measurements closest to VT1, VT2, and Peak FC values
+      let vt1Match = null, vt2Match = null, peakMatch = null;
+      let vt1Diff = Infinity, vt2Diff = Infinity, peakDiff = Infinity;
+
+      data.measurements.forEach(m => {
+        const fc = safeNum(m["FC"]);
+        const power = safeNum(m["TT"]);
+        if (power <= 0) return; // Skip measurements with no power
+
+        // Match VT1 (lower FC)
+        if (Math.abs(fc - fc1Target) < vt1Diff && fc <= fc1Target + 5) {
+          vt1Diff = Math.abs(fc - fc1Target);
+          vt1Match = m;
+        }
+        // Match VT2 (middle FC)
+        if (Math.abs(fc - fc2Target) < vt2Diff && fc >= fc1Target && fc <= fc2Target + 5) {
+          vt2Diff = Math.abs(fc - fc2Target);
+          vt2Match = m;
+        }
+        // Match Peak (highest FC)
+        if (Math.abs(fc - fcPeakTarget) < peakDiff) {
+          peakDiff = Math.abs(fc - fcPeakTarget);
+          peakMatch = m;
+        }
+      });
+
+      if (vt1Match) data.vt1.power = String(safeNum(vt1Match["TT"]));
+      if (vt2Match) data.vt2.power = String(safeNum(vt2Match["TT"]));
+      if (peakMatch) data.peakVO2.power = String(safeNum(peakMatch["TT"]));
+
+      // Mark as having power data if we found matches
+      if (vt1Match && vt2Match) {
+        hasPowerData = true;
+      }
+    }
+  }
+
   // Detect test type based on available data
   if (hasPowerData && !hasSpeedData) {
     data.testType = "bike";
@@ -279,7 +326,6 @@ const parseXMLSafe = (xmlString) => {
 // ==========================================
 // CALCULS
 // ==========================================
-// Couleurs pour le tableau (avec opacité)
 const ZCOL = {
   Z1: "rgba(219, 234, 254, 0.75)",
   Z2: "rgba(220, 252, 231, 0.75)",
@@ -728,7 +774,7 @@ export default function App() {
           <h1 className="text-3xl font-bold text-gray-800 mb-2">Générateur de Rapport TCP</h1>
           <p className="text-gray-600 mb-4">Endurance longue distance - Version Production</p>
           <div className="inline-flex items-center gap-2 bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm mb-6">
-            🔒 Données 100% locales • Validation stricte
+            🔒 Données 100% locales • [version 1.0]
           </div>
 
           <div
