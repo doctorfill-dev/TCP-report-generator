@@ -33,6 +33,8 @@ import ZoneLegend from "./components/ZoneLegend.jsx";
 // ==========================================
 // CONFIGURATION
 // ==========================================
+
+const version = 2.2
 const CONFIG = {
   MAX_DATA_POINTS: 10000,
   MAX_FILE_SIZE_MB: 50,
@@ -774,7 +776,7 @@ export default function App() {
           <h1 className="text-3xl font-bold text-gray-800 mb-2">Générateur de Rapport TCP</h1>
           <p className="text-gray-600 mb-4">Endurance longue distance - Version Production</p>
           <div className="inline-flex items-center gap-2 bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm mb-6">
-            🔒 Données 100% locales • [version 1.0]
+            🔒 Données 100% locales • v{version}
           </div>
 
           <div
@@ -1123,7 +1125,7 @@ export default function App() {
       </div>
 
       <div className="no-print text-center py-6 text-sm text-gray-500">
-        🔒 Données traitées localement. Aucun envoi externe (hors feedback). • v2.1
+        🔒 Données traitées localement. Aucun envoi externe (hors feedback). • v{version} [fixed: 260203]
       </div>
     </div>
   );
