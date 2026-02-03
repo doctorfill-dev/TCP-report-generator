@@ -73,9 +73,6 @@ export default function FeedbackModal({ isOpen, onClose }) {
         fd.set("g-recaptcha-response", token);
         fd.set(BOT_FIELD, String(botRef.current || ""));
 
-        // Debug (à enlever après validation)
-        // console.log("FormData:", Object.fromEntries(fd.entries()));
-
         await sendFormspree(fd, { endpoint });
 
         setSuccess(true);
