@@ -63,7 +63,7 @@ Built with modern, reliable tools:
 
 ```bash
 # Clone
-git clone <repository-url>
+git clone https://github.com/doctorfill-dev/TCP-report-generator.git
 cd report-generator
 
 # Install
