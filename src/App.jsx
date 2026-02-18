@@ -628,6 +628,7 @@ const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2,
     // Create docxtemplater instance
     const doc = new Docxtemplater(zip, {
       modules: [imageModule],
+      paragraphLoop: true,
       linebreaks: true,
     });
 
@@ -646,9 +647,6 @@ const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2,
     const z4 = zonesTable.find(z => z.z === "Z4") || {};
     const z5 = zonesTable.find(z => z.z === "Z5") || {};
 
-    // Use non-empty placeholder for missing zones to avoid Word Online rendering issues
-    const placeholder = "-";
-
     // Prepare template data - images as base64 strings for the image module
     const templateData = {
       titre: "Compte rendu d'epreuve d'effort - Endurance",
@@ -659,12 +657,12 @@ const dlDocx = async (data, zonesTable, rec, name, age, poids, fc1, fc2, s1, s2,
       vo2: vo2.toFixed(2),
       vo2kg: String(vo2kg),
       seuilsInfo: `V1=${fc1} bpm/${formatIntensity(s1)} ${intensityUnit} ; V2=${fc2} bpm/${formatIntensity(s2)} ${intensityUnit}`,
-      // Individual zone data with non-empty placeholders for Word Online compatibility
-      z1zone: z1.z || placeholder, z1fc: z1.fc || placeholder, z1sp: z1.sp || placeholder, z1det: z1.det || placeholder,
-      z2zone: z2.z || placeholder, z2fc: z2.fc || placeholder, z2sp: z2.sp || placeholder, z2det: z2.det || placeholder,
-      z3zone: z3.z || placeholder, z3fc: z3.fc || placeholder, z3sp: z3.sp || placeholder, z3det: z3.det || placeholder,
-      z4zone: z4.z || placeholder, z4fc: z4.fc || placeholder, z4sp: z4.sp || placeholder, z4det: z4.det || placeholder,
-      z5zone: z5.z || placeholder, z5fc: z5.fc || placeholder, z5sp: z5.sp || placeholder, z5det: z5.det || placeholder,
+      // Individual zone data
+      z1zone: z1.z || "", z1fc: z1.fc || "", z1sp: z1.sp || "", z1det: z1.det || "",
+      z2zone: z2.z || "", z2fc: z2.fc || "", z2sp: z2.sp || "", z2det: z2.det || "",
+      z3zone: z3.z || "", z3fc: z3.fc || "", z3sp: z3.sp || "", z3det: z3.det || "",
+      z4zone: z4.z || "", z4fc: z4.fc || "", z4sp: z4.sp || "", z4det: z4.det || "",
+      z5zone: z5.z || "", z5fc: z5.fc || "", z5sp: z5.sp || "", z5det: z5.det || "",
       // Flag for 3-zone mode (other sports)
       has5zones: zonesTable.length === 5 ? "true" : "",
       intensityLabel: intensityLabel,
